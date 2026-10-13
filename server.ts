@@ -131,6 +131,85 @@ async function startServer() {
     }
   });
 
+  // Sentiment & Voice Style Analysis Endpoint powered by Gemini Flash
+  app.post("/api/sentiment-analysis", async (req, res) => {
+    try {
+      const { text, apiKey: clientApiKey } = req.body;
+      if (!text || typeof text !== 'string' || !text.trim()) {
+        return res.status(400).json({ error: "Text is required for sentiment analysis" });
+      }
+
+      const effectiveAi = clientApiKey
+        ? new GoogleGenAI({ apiKey: clientApiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : ai;
+
+      const prompt = `Tu es un expert ingénieur du son et directeur artistique vocal pour VoxArt (Studio RidiaLArt-Vision).
+Analyse minutieusement la tonalité, le sentiment, les émotions et le rythme du texte ci-dessous pour recommander la configuration de style vocal la plus percutante.
+
+Options de styles disponibles dans VoxArt :
+1. Domaine "art" :
+   - Label: "Poétique & Rythmé (Synesthésique)"
+     Val: "prosodie artistique et musicale, variations de rythme, pauses expressives, grande chaleur humaine et phrasé vibrant"
+   - Label: "Conte Traditionnel / Griot"
+     Val: "interprétation de conteur traditionnel, voix vivante, imagée, chaleureuse, habitée par l'oralité et le souffle"
+   - Label: "Slam & Performance Urbaine"
+     Val: "déclamation scandée, percutante, pleine d'énergie, de nuances et d'émotion brute"
+
+2. Domaine "cinema" :
+   - Label: "Voix Off Documentaire / Court-métrage"
+     Val: "voix de cinéma immersive, texturée, grave, posée et chargée d'émotion narrative"
+   - Label: "Dramatique & Intense"
+     Val: "tension dramatique palpable, intonation profonde, mystérieuse et captivante"
+
+3. Domaine "education" :
+   - Label: "Narratif & Pédagogique"
+     Val: "voix claire, bienveillante, chaleureuse et très expressive"
+
+4. Domaine "marketing" :
+   - Label: "Pub & Podcast Dynamique"
+     Val: "ton enthousiaste, accrocheur, moderne, vivant et percutant"
+   - Label: "Corporate Élégant"
+     Val: "voix posée, professionnelle, inspirante et convaincante"
+
+5. Domaine "journalism" :
+   - Label: "Reportage & Récit"
+     Val: "ton journalistique vivant, incarné, sérieux mais doté d'une vraie présence humaine"
+
+6. Domaine "general" :
+   - Label: "Naturel & Expressif"
+     Val: "voix naturelle, humaine, chaleureuse et équilibrée"
+
+Texte à analyser :
+"""
+${text.slice(0, 3000)}
+"""
+
+Retourne impérativement un objet JSON strict avec :
+- sentiment: "Positif / Enthousiaste" | "Dramatique / Sombre" | "Poétique / Méditatif" | "Éducatif / Explicatif" | "Énergique / Promotionnel" | "Informatif / Neutre"
+- moodEmoji: emoji représentatif (ex: 🎭, ✨, 🔥, 📖, ⚡, 🎙️)
+- explanation: une brève explication (max 1 phrase percutante en français) de pourquoi ce style sublime le texte.
+- suggestedDomain: le domaine correspondant exactement ("art" | "cinema" | "education" | "marketing" | "journalism" | "general")
+- suggestedStyleLabel: le label exact du style choisi
+- suggestedStyleVal: la valeur textuelle exacte 'val' du style
+- speechPaceTip: conseil expressif de tempo ("Tempo modéré avec pauses", "Rythme vif et soutenu", "Prosodie lente et solennelle", etc.)`;
+
+      const response = await effectiveAi.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
+
+      const responseText = response.text || "{}";
+      const parsed = JSON.parse(responseText);
+      res.json(parsed);
+    } catch (err: any) {
+      console.warn("Gemini Sentiment Analysis API error:", err);
+      res.status(500).json({ error: err.message || "Failed to analyze sentiment" });
+    }
+  });
+
   // Setup Vite middleware
   const vite = await createViteServer({
     server: { middlewareMode: true },

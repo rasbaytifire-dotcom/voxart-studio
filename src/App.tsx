@@ -42,6 +42,16 @@ interface BatchQueueItem {
   errorMsg?: string;
 }
 
+export interface SentimentAnalysisResult {
+  sentiment: string;
+  moodEmoji: string;
+  explanation: string;
+  suggestedDomain: string;
+  suggestedStyleLabel: string;
+  suggestedStyleVal: string;
+  speechPaceTip: string;
+}
+
 const PRESET_VOICES = [
   { id: 'Kore', name: 'Kore (Femme mélodieuse)', gender: 'Femme', desc: 'Warm, articulate, balanced' },
   { id: 'Puck', name: 'Puck (Homme dynamique)', gender: 'Homme', desc: 'Enthusiastic, energetic, bright' },
@@ -170,9 +180,197 @@ export default function App() {
   const [batchDelayCountdown, setBatchDelayCountdown] = useState<number>(0);
   const [batchSequentialPlayingIndex, setBatchSequentialPlayingIndex] = useState<number | null>(null);
 
+  // Sentiment Analysis State & Expressiveness Optimizer
+  const [isAnalyzingSentiment, setIsAnalyzingSentiment] = useState(false);
+  const [sentimentResult, setSentimentResult] = useState<SentimentAnalysisResult | null>(null);
+  const [autoApplySentimentStyle, setAutoApplySentimentStyle] = useState<boolean>(() => {
+    return localStorage.getItem('voxart_auto_sentiment') === 'true';
+  });
+  const [appliedSentimentTimestamp, setAppliedSentimentTimestamp] = useState<number | null>(null);
+
   const batchFileInputRef = useRef<HTMLInputElement | null>(null);
   const batchAbortRef = useRef<boolean>(false);
   const batchAudioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const sentimentDebounceRef = useRef<number | null>(null);
+
+  // Fallback heuristic sentiment analyzer if offline or network unavailable
+  const analyzeSentimentLocal = (content: string): SentimentAnalysisResult => {
+    const lower = content.toLowerCase();
+
+    // 1. Poetry / Art keywords
+    const artKeywords = ['poème', 'poésie', 'étoile', 'cœur', 'âme', 'beauté', 'lumière', 'harmonie', 'vers', 'rime', 'chant', 'sens', 'vibrant', 'souffle', 'griot', 'légende', 'ancêtre', 'contes'];
+    // 2. Cinema / Dramatic keywords
+    const dramaKeywords = ['mystère', 'nuit', 'ombre', 'peur', 'sombre', 'tragédie', 'destin', 'guerre', 'silence', 'abîme', 'angoisse', 'drame', 'tension', 'mort', 'danger'];
+    // 3. Marketing / Promo keywords
+    const promoKeywords = ['nouveau', 'offre', 'découvrez', 'promo', 'incroyable', 'cliquez', 'achetez', 'gratuit', 'exceptionnel', 'profitez', 'solution', 'croissance', 'business', 'exclusif', 'lancement'];
+    // 4. Education / Pedagogic keywords
+    const eduKeywords = ['apprendre', 'leçon', 'comprendre', 'cours', 'méthode', 'étapes', 'explication', 'pourquoi', 'comment', 'définition', 'découverte', 'science', 'histoire', 'concept'];
+    // 5. Journalism / News keywords
+    const newsKeywords = ['enquête', 'selon', 'rapport', 'gouvernement', 'témoignage', 'faits', 'actualité', 'direct', 'source', 'déclaration', 'société', 'événement', 'journaliste'];
+
+    const countMatches = (list: string[]) => list.reduce((acc, k) => acc + (lower.includes(k) ? 1 : 0), 0);
+
+    const artScore = countMatches(artKeywords);
+    const dramaScore = countMatches(dramaKeywords);
+    const promoScore = countMatches(promoKeywords);
+    const eduScore = countMatches(eduKeywords);
+    const newsScore = countMatches(newsKeywords);
+
+    const maxScore = Math.max(artScore, dramaScore, promoScore, eduScore, newsScore);
+
+    if (maxScore === 0) {
+      return {
+        sentiment: "Naturel & Équilibré",
+        moodEmoji: "🎙️",
+        explanation: "Ton sobre et fluide, idéal pour une restitution claire et agréable.",
+        suggestedDomain: "general",
+        suggestedStyleLabel: stylesMap.general[0].label,
+        suggestedStyleVal: stylesMap.general[0].val,
+        speechPaceTip: "Débit naturel et régulier"
+      };
+    }
+
+    if (artScore === maxScore) {
+      return {
+        sentiment: "Poétique & Émotionnel",
+        moodEmoji: "✨",
+        explanation: "Texte évocateur et littéraire : une prosodie musicale et sensible sublime le lyrisme.",
+        suggestedDomain: "art",
+        suggestedStyleLabel: stylesMap.art[0].label,
+        suggestedStyleVal: stylesMap.art[0].val,
+        speechPaceTip: "Prosodie artistique et pauses expressives"
+      };
+    }
+
+    if (dramaScore === maxScore) {
+      return {
+        sentiment: "Dramatique & Intense",
+        moodEmoji: "🎭",
+        explanation: "Texte à forte tension narrative : une voix grave et captivante amplifie le mystère.",
+        suggestedDomain: "cinema",
+        suggestedStyleLabel: stylesMap.cinema[1].label,
+        suggestedStyleVal: stylesMap.cinema[1].val,
+        speechPaceTip: "Prosodie lente, intonation profonde et suspendue"
+      };
+    }
+
+    if (promoScore === maxScore) {
+      return {
+        sentiment: "Dynamique & Promotionnel",
+        moodEmoji: "🔥",
+        explanation: "Message percutant et persuasif : un phrasé moderne et entraînant capte l'attention.",
+        suggestedDomain: "marketing",
+        suggestedStyleLabel: stylesMap.marketing[0].label,
+        suggestedStyleVal: stylesMap.marketing[0].val,
+        speechPaceTip: "Rythme vif et accrocheur"
+      };
+    }
+
+    if (eduScore === maxScore) {
+      return {
+        sentiment: "Pédagogique & Bienveillant",
+        moodEmoji: "📖",
+        explanation: "Contenu explicatif : une voix claire et posée facilite l'assimilation et la compréhension.",
+        suggestedDomain: "education",
+        suggestedStyleLabel: stylesMap.education[0].label,
+        suggestedStyleVal: stylesMap.education[0].val,
+        speechPaceTip: "Débit posé et articulation soignée"
+      };
+    }
+
+    return {
+      sentiment: "Informatif & Récit",
+      moodEmoji: "📰",
+      explanation: "Structure factuelle : une voix de reportage vivante donne de la crédibilité au propos.",
+      suggestedDomain: "journalism",
+      suggestedStyleLabel: stylesMap.journalism[0].label,
+      suggestedStyleVal: stylesMap.journalism[0].val,
+      speechPaceTip: "Rythme journalistique fluide et incarné"
+    };
+  };
+
+  const runSentimentAnalysis = async (inputText: string, forced = false) => {
+    const trimmed = inputText.trim();
+    if (!trimmed || trimmed.length < 12) {
+      setSentimentResult(null);
+      return;
+    }
+
+    setIsAnalyzingSentiment(true);
+    try {
+      const res = await fetch('/api/sentiment-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: trimmed, apiKey })
+      });
+
+      if (!res.ok) {
+        throw new Error(`API response status ${res.status}`);
+      }
+
+      const data: SentimentAnalysisResult = await res.json();
+      if (data && data.suggestedStyleVal) {
+        setSentimentResult(data);
+        if (autoApplySentimentStyle || forced) {
+          applySentimentSuggestion(data);
+        }
+      } else {
+        throw new Error('Invalid JSON format from AI');
+      }
+    } catch (err) {
+      console.warn("Using offline sentiment heuristic fallback:", err);
+      const fallback = analyzeSentimentLocal(trimmed);
+      setSentimentResult(fallback);
+      if (autoApplySentimentStyle || forced) {
+        applySentimentSuggestion(fallback);
+      }
+    } finally {
+      setIsAnalyzingSentiment(false);
+    }
+  };
+
+  const applySentimentSuggestion = (res: SentimentAnalysisResult) => {
+    if (res.suggestedDomain && stylesMap[res.suggestedDomain]) {
+      setDomain(res.suggestedDomain);
+    }
+    if (res.suggestedStyleVal) {
+      setStyle(res.suggestedStyleVal);
+    }
+    setAppliedSentimentTimestamp(Date.now());
+    setTimeout(() => {
+      setAppliedSentimentTimestamp(null);
+    }, 2800);
+  };
+
+  // Real-time debounced trigger for sentiment analysis on text changes
+  useEffect(() => {
+    if (sentimentDebounceRef.current) {
+      clearTimeout(sentimentDebounceRef.current);
+    }
+
+    if (text.trim().length >= 15) {
+      sentimentDebounceRef.current = window.setTimeout(() => {
+        runSentimentAnalysis(text);
+      }, 700);
+    } else {
+      setSentimentResult(null);
+    }
+
+    return () => {
+      if (sentimentDebounceRef.current) {
+        clearTimeout(sentimentDebounceRef.current);
+      }
+    };
+  }, [text]);
+
+  const handleToggleAutoApplySentiment = () => {
+    const nextVal = !autoApplySentimentStyle;
+    setAutoApplySentimentStyle(nextVal);
+    localStorage.setItem('voxart_auto_sentiment', String(nextVal));
+    if (nextVal && sentimentResult) {
+      applySentimentSuggestion(sentimentResult);
+    }
+  };
 
   useEffect(() => {
     const loadedLib = JSON.parse(localStorage.getItem('voxart_library') || '{}');
@@ -1100,8 +1298,16 @@ ${item.text}`;
               <div className="text-xs text-[#a6adc8] uppercase tracking-widest font-medium mt-1">Studio RidiaLArt-Vision</div>
             </div>
             
-            <div className="bg-[#313244] p-3 rounded-xl flex items-center justify-between text-xs text-[#f9e2af]">
-              <span>Config : {language} | {genderText} | {domain.toUpperCase()} | Modèle : {model}</span>
+            <div className="bg-[#313244] p-3 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#f9e2af]">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span>Config : {language} | {genderText} | {domain.toUpperCase()} | Modèle : {model}</span>
+                {sentimentResult && (
+                  <span className="text-[11px] bg-[#1e1e2e] text-[#89b4fa] px-2 py-0.5 rounded-full border border-[#89b4fa]/30 font-medium inline-flex items-center gap-1">
+                    <span>{sentimentResult.moodEmoji}</span>
+                    <span>Tonalité : {sentimentResult.sentiment}</span>
+                  </span>
+                )}
+              </div>
               <div>
                 <button
                   onClick={() => setCurrentView('library')}
@@ -1182,7 +1388,14 @@ ${item.text}`;
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="block text-xs font-semibold text-[#a6adc8]">Texte à convertir :</label>
-                    <span className="text-[10px] text-[#a6adc8]">{text.length} caractères</span>
+                    <div className="flex items-center gap-2">
+                      {isAnalyzingSentiment && (
+                        <span className="text-[10px] text-[#89b4fa] flex items-center gap-1">
+                          <RefreshCw className="w-3 h-3 animate-spin" /> Analyse d'expressivité...
+                        </span>
+                      )}
+                      <span className="text-[10px] text-[#a6adc8]">{text.length} caractères</span>
+                    </div>
                   </div>
                   <textarea
                     value={text}
@@ -1191,6 +1404,114 @@ ${item.text}`;
                     className="w-full h-36 p-3 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm resize-y"
                   />
                 </div>
+
+                {/* DYNAMIC SENTIMENT ANALYSIS & EXPRESSIVENESS OPTIMIZER */}
+                {text.trim().length >= 12 && (
+                  <div className="p-3.5 rounded-xl bg-[#181825] border border-[#89b4fa]/30 space-y-2.5 transition-all">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#89b4fa]">
+                        <Sparkles className="w-4 h-4 text-[#f9e2af]" />
+                        <span>Analyse de Sentiment & Expressivité</span>
+                        {isAnalyzingSentiment && (
+                          <RefreshCw className="w-3 h-3 text-[#89b4fa] animate-spin ml-1" />
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {/* Auto-apply toggle */}
+                        <button
+                          type="button"
+                          onClick={handleToggleAutoApplySentiment}
+                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all flex items-center gap-1 font-semibold ${
+                            autoApplySentimentStyle
+                              ? 'bg-[#a6e3a1]/20 text-[#a6e3a1] border-[#a6e3a1]/40'
+                              : 'bg-[#313244] text-[#a6adc8] border-[#45475a] hover:text-[#cdd6f4]'
+                          }`}
+                          title="Applique immédiatement et en continu le style suggéré par l'analyse"
+                        >
+                          <Check className={`w-3 h-3 ${autoApplySentimentStyle ? 'opacity-100' : 'opacity-40'}`} />
+                          <span>Application auto {autoApplySentimentStyle ? 'activée' : 'désactivée'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => runSentimentAnalysis(text, false)}
+                          disabled={isAnalyzingSentiment}
+                          className="text-[10px] text-[#89b4fa] hover:underline flex items-center gap-1"
+                        >
+                          <RefreshCw className={`w-2.5 h-2.5 ${isAnalyzingSentiment ? 'animate-spin' : ''}`} />
+                          <span>Réanalyser</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {sentimentResult ? (
+                      <div className="space-y-2 text-xs">
+                        {/* Mood & Sentiment Badge */}
+                        <div className="flex items-center justify-between flex-wrap gap-1.5 bg-[#313244]/60 p-2 rounded-lg border border-[#45475a]/40">
+                          <div className="flex items-center gap-1.5 font-medium text-[#cdd6f4]">
+                            <span className="text-base">{sentimentResult.moodEmoji}</span>
+                            <span>Tonalité détectée : <strong className="text-[#f9e2af]">{sentimentResult.sentiment}</strong></span>
+                          </div>
+                          {sentimentResult.speechPaceTip && (
+                            <span className="text-[10px] text-[#89b4fa] bg-[#1e1e2e] px-2 py-0.5 rounded font-mono">
+                              ⏱️ {sentimentResult.speechPaceTip}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Explanation */}
+                        {sentimentResult.explanation && (
+                          <p className="text-[11px] text-[#a6adc8] leading-relaxed italic">
+                            "{sentimentResult.explanation}"
+                          </p>
+                        )}
+
+                        {/* Suggestion Action Bar */}
+                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#313244]">
+                          <div className="text-[11px] truncate text-[#cdd6f4]">
+                            <span className="text-[#a6adc8]">Style conseillé : </span>
+                            <strong className="text-[#89b4fa]">{sentimentResult.suggestedStyleLabel}</strong>
+                            <span className="text-[10px] text-[#6c7086] ml-1">({sentimentResult.suggestedDomain.toUpperCase()})</span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => applySentimentSuggestion(sentimentResult)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
+                              appliedSentimentTimestamp
+                                ? 'bg-[#a6e3a1] text-[#11111b] shadow-md'
+                                : style === sentimentResult.suggestedStyleVal && domain === sentimentResult.suggestedDomain
+                                  ? 'bg-[#313244] text-[#a6e3a1] border border-[#a6e3a1]/40'
+                                  : 'bg-gradient-to-r from-[#89b4fa] to-[#b4befe] text-[#11111b] hover:opacity-90 shadow-sm'
+                            }`}
+                          >
+                            {appliedSentimentTimestamp ? (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Style Appliqué !</span>
+                              </>
+                            ) : style === sentimentResult.suggestedStyleVal && domain === sentimentResult.suggestedDomain ? (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Style Actif</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>Adopter ce style</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-[#a6adc8] flex items-center justify-center py-1">
+                        Saisie en cours... L'IA optimise les nuances et l'intonation.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <button
                   onClick={handlePreview}
