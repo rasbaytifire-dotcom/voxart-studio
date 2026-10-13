@@ -8,11 +8,17 @@ import {
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
   Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
-  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X
+  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { ThemeModeSelector, StudioThemeMode } from './components/ThemeModeSelector';
+import { PlasticSynesthesiaCanvas } from './components/PlasticSynesthesiaCanvas';
+import { PolyrhythmicEngine } from './components/PolyrhythmicEngine';
+import { AfricanRhythmStudio } from './components/AfricanRhythmStudio';
+import { AIAgentChat } from './components/AIAgentChat';
+import { RhythmComposition } from './types/rhythm';
 import studioLogo from './assets/images/voxart_logo_1791875178885.jpg';
 
 interface SavedAudioItem {
@@ -82,6 +88,13 @@ const stylesMap: Record<string, { label: string; val: string }[]> = {
   ],
   general: [
     { label: "Naturel & Expressif", val: "voix naturelle, humaine, chaleureuse et équilibrée" }
+  ],
+  ridialart: [
+    { label: "Taasu & Scansion Oratoire", val: "déclamation oratoire scandée dans la tradition du Taasu sénégalais, tempo percutant, verve poétique, assonances rythmées et souffle habité" },
+    { label: "Griot & Épopée Ancestrale", val: "voix de griot gardien des récits sacrés, louanges solennelles, voix texturée, habitée par l'oralité et les généalogies" },
+    { label: "Synesthésie Plastique RidiaLArt", val: "prosodie artistique et synesthésique reliant le verbe à la matière, variations de dynamique, résonance de calebasse et de djembé" },
+    { label: "Dub Roots & Poésie Mystique", val: "déclamation méditative, phrasé profond et posé, présence chaleureuse imprégnée d'écho spatial et de spiritualité" },
+    { label: "Conte sous l'Arbre à Palabres", val: "narration vivante et captivante, chuchotements initiatiques, envolées dramatiques et silences signifiants" }
   ]
 };
 
@@ -127,8 +140,36 @@ function formatSRTTime(seconds: number): string {
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'library' | 'settings'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'rhythm_studio' | 'library' | 'settings'>('home');
+  const [studioComposition, setStudioComposition] = useState<RhythmComposition | undefined>(undefined);
+  const [activeBackingTrack, setActiveBackingTrack] = useState<{ url: string; title: string } | null>(null);
+  const [isBackingTrackPlaying, setIsBackingTrackPlaying] = useState<boolean>(false);
+  const backingAudioRef = useRef<HTMLAudioElement | null>(null);
   
+  // Studio Theme Modality: 'standard' (Universal Pro Studio) vs 'ridialart' (Afrofuturisme Endogène & Synesthésie Plastique)
+  const [themeMode, setThemeMode] = useState<StudioThemeMode>(() => {
+    return (localStorage.getItem('ridialart_studio_theme') as StudioThemeMode) || 'ridialart';
+  });
+  const [isAudioPlaying, setIsAudioPlaying] = useState<boolean>(false);
+
+  const handleSelectThemeMode = (mode: StudioThemeMode) => {
+    setThemeMode(mode);
+    localStorage.setItem('ridialart_studio_theme', mode);
+    if (mode === 'ridialart') {
+      if (domain !== 'ridialart' && domain !== 'art') {
+        setDomain('ridialart');
+        setStyle(stylesMap.ridialart[0].val);
+      }
+      showToast("Mode RidiaLArt Vision activé : Synesthésie plastique & Polyrythmies Djembé/Sabar déployées.", "info");
+    } else {
+      if (domain === 'ridialart') {
+        setDomain('general');
+        setStyle(stylesMap.general[0].val);
+      }
+      showToast("Mode Standard Pro activé : Studio audio universel prêt.", "info");
+    }
+  };
+
   // Settings State
   const [domain, setDomain] = useState('art');
   const [language, setLanguage] = useState('Français');
@@ -248,8 +289,10 @@ export default function App() {
   const analyzeSentimentLocal = (content: string): SentimentAnalysisResult => {
     const lower = content.toLowerCase();
 
+    // 0. RidiaLArt & Endogenous Afrofuturism / Taasu / Griot / Djembé keywords
+    const ridialartKeywords = ['taasu', 'griot', 'sabar', 'djembe', 'djembé', 'kora', 'balafon', 'ancêtre', 'ancêtres', 'oralité', 'initiatique', 'palabre', 'dub', 'roots', 'afrofuturism', 'afrofuturisme', 'synesthésie', 'senegal', 'sénégal', 'wolof', 'calebasse', 'ngéwél'];
     // 1. Poetry / Art keywords
-    const artKeywords = ['poème', 'poésie', 'étoile', 'cœur', 'âme', 'beauté', 'lumière', 'harmonie', 'vers', 'rime', 'chant', 'sens', 'vibrant', 'souffle', 'griot', 'légende', 'ancêtre', 'contes'];
+    const artKeywords = ['poème', 'poésie', 'étoile', 'cœur', 'âme', 'beauté', 'lumière', 'harmonie', 'vers', 'rime', 'chant', 'sens', 'vibrant', 'souffle', 'légende', 'contes'];
     // 2. Cinema / Dramatic keywords
     const dramaKeywords = ['mystère', 'nuit', 'ombre', 'peur', 'sombre', 'tragédie', 'destin', 'guerre', 'silence', 'abîme', 'angoisse', 'drame', 'tension', 'mort', 'danger'];
     // 3. Marketing / Promo keywords
@@ -261,13 +304,14 @@ export default function App() {
 
     const countMatches = (list: string[]) => list.reduce((acc, k) => acc + (lower.includes(k) ? 1 : 0), 0);
 
+    const ridialartScore = countMatches(ridialartKeywords);
     const artScore = countMatches(artKeywords);
     const dramaScore = countMatches(dramaKeywords);
     const promoScore = countMatches(promoKeywords);
     const eduScore = countMatches(eduKeywords);
     const newsScore = countMatches(newsKeywords);
 
-    const maxScore = Math.max(artScore, dramaScore, promoScore, eduScore, newsScore);
+    const maxScore = Math.max(ridialartScore, artScore, dramaScore, promoScore, eduScore, newsScore);
 
     if (maxScore === 0) {
       return {
@@ -278,6 +322,18 @@ export default function App() {
         suggestedStyleLabel: stylesMap.general[0].label,
         suggestedStyleVal: stylesMap.general[0].val,
         speechPaceTip: "Débit naturel et régulier"
+      };
+    }
+
+    if (ridialartScore === maxScore) {
+      return {
+        sentiment: "Oralité Sacrée & Griot",
+        moodEmoji: "🥁",
+        explanation: "Texte d'oralité vivante ou poésie scandée : une prosodie habitée et polyrythmique sublime le verbe.",
+        suggestedDomain: "ridialart",
+        suggestedStyleLabel: stylesMap.ridialart[0].label,
+        suggestedStyleVal: stylesMap.ridialart[0].val,
+        speechPaceTip: "Scansion oratoire et silences habités"
       };
     }
 
@@ -737,6 +793,60 @@ export default function App() {
     setCurrentView('library');
   };
 
+  const handleSaveRhythmToLibrary = (
+    _audioBlob: Blob,
+    audioDataUrl: string,
+    title: string,
+    composition: RhythmComposition
+  ) => {
+    let targetProj = selectedProject;
+    if (targetProj === '__NEW__' || !targetProj) {
+      targetProj = Object.keys(library)[0] || 'Rythmes_Africains';
+    }
+
+    const cleanTitle = title.startsWith('[Rythme]') ? title : `[Rythme] ${title}`;
+    const updatedLib = { ...library };
+    if (!updatedLib[targetProj]) {
+      updatedLib[targetProj] = { audios: [], texts: [] };
+    }
+
+    updatedLib[targetProj].audios.push({
+      id: Date.now(),
+      name: cleanTitle,
+      data: audioDataUrl
+    });
+
+    const compositionMetadata = `[Composition Polyrythmique RidiaLArt]\n[Titre: ${composition.name}]\n[Tradition: ${composition.tradition}]\n[Signature: ${composition.signature} - ${composition.stepCount} pas]\n[Tempo: ${composition.bpm} BPM]\n[Date: ${new Date().toISOString()}]\n----------------------------------------\n\n` +
+      `Instruments: ${composition.tracks.map(t => t.instrumentId).join(', ')}\n` +
+      `Effets: Reverb ${composition.effects.reverb.enabled ? 'ON' : 'OFF'} (${composition.effects.reverb.decay}s), Delay ${composition.effects.delay.enabled ? 'ON' : 'OFF'}, Compresseur ${composition.effects.compressor.enabled ? 'ON' : 'OFF'}\n` +
+      `Description: ${composition.description || 'Rythme africain composé au Studio RidiaLArt'}`;
+
+    updatedLib[targetProj].texts.push({
+      id: Date.now() + 1,
+      name: `${cleanTitle}_partition`,
+      content: compositionMetadata
+    });
+
+    saveLibraryToStorage(updatedLib);
+
+    try {
+      const savedComps = JSON.parse(localStorage.getItem('voxart_saved_compositions') || '{}');
+      savedComps[cleanTitle] = composition;
+      localStorage.setItem('voxart_saved_compositions', JSON.stringify(savedComps));
+    } catch (e) {
+      console.warn("Storage error", e);
+    }
+
+    showToast(`Rythme "${cleanTitle}" enregistré avec succès dans "${targetProj}" !`, "success");
+  };
+
+  const handleUseRhythmAsBackingTrack = (_audioBlob: Blob, audioUrl: string, title: string) => {
+    setActiveBackingTrack({ url: audioUrl, title });
+    setIsBackingTrackPlaying(false);
+    showToast(`Boucle de rythme "${title}" chargée comme accompagnement pour le Studio Voix !`, "success");
+    setCurrentView('home');
+  };
+
   const exportProjectAsZip = async (projectName: string, pData: ProjectData) => {
     try {
       const zip = new JSZip();
@@ -882,10 +992,20 @@ export default function App() {
           text: `VoxArt (Studio RidiaLArt-Vision) - Fichier audio : ${filename}`
         });
       } else {
-        showToast("Le partage de fichiers n'est pas pris en charge par votre navigateur. Utilisez le téléchargement ⬇️.", "info");
+        showToast("Le partage direct de fichiers n'est pas pris en charge par votre navigateur. Utilisez le téléchargement ⬇️.", "info");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const errorObj = err as { name?: string; message?: string } | null;
+      if (
+        errorObj?.name === 'AbortError' ||
+        errorObj?.message?.toLowerCase().includes('cancel') ||
+        errorObj?.message?.toLowerCase().includes('abort')
+      ) {
+        // User closed/cancelled the share dialog normally; no action needed
+        return;
+      }
       console.error(err);
+      showToast("Impossible de partager le fichier audio.", "error");
     }
   };
 
@@ -904,8 +1024,18 @@ export default function App() {
       } else {
         showToast("Partage non supporté sur ce navigateur.", "info");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const errorObj = err as { name?: string; message?: string } | null;
+      if (
+        errorObj?.name === 'AbortError' ||
+        errorObj?.message?.toLowerCase().includes('cancel') ||
+        errorObj?.message?.toLowerCase().includes('abort')
+      ) {
+        // User closed/cancelled the share dialog normally; no action needed
+        return;
+      }
       console.error(err);
+      showToast("Impossible de partager le texte.", "error");
     }
   };
 
@@ -1279,73 +1409,41 @@ ${item.text}`;
     <div className="min-h-screen bg-[#181825] text-[#cdd6f4] flex flex-col font-sans">
       <OfflineIndicator />
 
-      {/* Top Header */}
-      <header className="flex items-center justify-between gap-8 px-6 py-4 border-b border-[#313244] bg-[#1e1e2e]/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#89b4fa] to-[#fab387] flex items-center justify-center shadow-md">
-            <Radio className="w-5 h-5 text-[#11111b]" />
-          </div>
-          <div>
-            <span className="text-lg font-bold tracking-tight text-[#cdd6f4] whitespace-nowrap">VoxArt Studio</span>
-            <span className="hidden sm:inline-block ml-2 text-xs text-[#a6adc8] font-mono">RidiaLArt-Vision</span>
-          </div>
+      {/* Minimalist Top Bar with Top-Left Section Dropdown */}
+      <div className="flex items-center justify-between px-4 py-2 bg-[#181825]/90 border-b border-[#313244]/40 backdrop-blur-sm sticky top-0 z-40">
+        <div className="flex items-center gap-2">
+          <select
+            value={currentView}
+            onChange={(e) => setCurrentView(e.target.value as any)}
+            className="bg-[#1e1e2e] text-[#89b4fa] font-bold text-xs px-3 py-1.5 rounded-xl border border-[#313244] shadow-md focus:outline-none focus:border-[#89b4fa] cursor-pointer"
+            title="Volet déroulant des rubriques"
+          >
+            <option value="home">🏠 Accueil Studio</option>
+            <option value="rhythm_studio">🥁 Atelier Rythmes</option>
+            <option value="library">📚 Bibliothèque ({Object.keys(library).length})</option>
+            <option value="settings">⚙️ Réglages</option>
+          </select>
         </div>
 
-        <nav className="hidden md:flex items-center gap-1 bg-[#313244]/60 p-1 rounded-xl border border-[#45475a]">
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setCurrentView('home')}
-            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              currentView === 'home' ? 'bg-[#89b4fa] text-[#11111b]' : 'text-[#cdd6f4]'
+            type="button"
+            onClick={() => handleSelectThemeMode(themeMode === 'ridialart' ? 'standard' : 'ridialart')}
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 ${
+              themeMode === 'ridialart'
+                ? 'bg-[#2d1807] border-[#fbbf24]/50 text-[#fbbf24]'
+                : 'bg-[#313244] border-[#89b4fa]/40 text-[#89b4fa]'
             }`}
+            title="Basculer entre Mode Standard et Mode RidiaLArt"
           >
-            Accueil Studio
+            {themeMode === 'ridialart' ? <Sparkles className="w-3 h-3 text-[#fbbf24]" /> : <Radio className="w-3 h-3 text-[#89b4fa]" />}
+            <span className="hidden sm:inline">{themeMode === 'ridialart' ? 'RidiaLArt' : 'Standard'}</span>
           </button>
-          <button
-            onClick={() => setCurrentView('library')}
-            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              currentView === 'library' ? 'bg-[#89b4fa] text-[#11111b]' : 'text-[#cdd6f4]'
-            }`}
-          >
-            📚 Bibliothèque ({Object.keys(library).length})
-          </button>
-          <button
-            onClick={() => setCurrentView('settings')}
-            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              currentView === 'settings' ? 'bg-[#89b4fa] text-[#11111b]' : 'text-[#cdd6f4]'
-            }`}
-          >
-            ⚙️ Réglages
-          </button>
-        </nav>
-
-        <div className="flex items-center gap-3 shrink-0">
           <PWAInstallButton />
         </div>
-      </header>
-
-      {/* Mobile Nav */}
-      <div className="flex md:hidden gap-2 px-4 py-3 bg-[#1e1e2e] border-b border-[#313244] shrink-0">
-        <button
-          onClick={() => setCurrentView('home')}
-          className={`flex-1 py-1.5 text-xs font-semibold rounded-lg ${currentView === 'home' ? 'bg-[#89b4fa] text-[#11111b]' : 'bg-[#313244] text-[#cdd6f4]'}`}
-        >
-          Accueil
-        </button>
-        <button
-          onClick={() => setCurrentView('library')}
-          className={`flex-1 py-1.5 text-xs font-semibold rounded-lg ${currentView === 'library' ? 'bg-[#89b4fa] text-[#11111b]' : 'bg-[#313244] text-[#cdd6f4]'}`}
-        >
-          Biblio
-        </button>
-        <button
-          onClick={() => setCurrentView('settings')}
-          className={`flex-1 py-1.5 text-xs font-semibold rounded-lg ${currentView === 'settings' ? 'bg-[#89b4fa] text-[#11111b]' : 'bg-[#313244] text-[#cdd6f4]'}`}
-        >
-          Réglages
-        </button>
       </div>
 
-      <main className={`flex-1 w-full mx-auto p-4 sm:p-6 transition-all ${homeMode === 'batch' && currentView === 'home' ? 'max-w-2xl' : 'max-w-xl'}`}>
+      <main className={`flex-1 w-full mx-auto p-4 sm:p-6 transition-all ${currentView === 'rhythm_studio' ? 'max-w-4xl' : homeMode === 'batch' && currentView === 'home' ? 'max-w-2xl' : 'max-w-xl'}`}>
         
         {/* HOME VIEW */}
         {currentView === 'home' && (
@@ -1370,30 +1468,32 @@ ${item.text}`;
               <div className="text-xs text-[#a6adc8] uppercase tracking-widest font-medium mt-1">Studio RidiaLArt-Vision</div>
             </div>
             
-            <div className="bg-[#313244] p-3 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#f9e2af]">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span>Config : {language} | {genderText} | {domain.toUpperCase()} | Modèle : {model}</span>
-                {sentimentResult && (
-                  <span className="text-[11px] bg-[#1e1e2e] text-[#89b4fa] px-2 py-0.5 rounded-full border border-[#89b4fa]/30 font-medium inline-flex items-center gap-1">
-                    <span>{sentimentResult.moodEmoji}</span>
-                    <span>Tonalité : {sentimentResult.sentiment}</span>
-                  </span>
-                )}
-              </div>
-              <div>
-                <button
-                  onClick={() => setCurrentView('library')}
-                  className="px-2.5 py-1 bg-[#1e1e2e] text-[#89b4fa] rounded-lg border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all font-semibold mr-2 text-xs"
-                >
-                  📚 Biblio
-                </button>
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  className="px-2.5 py-1 bg-[#1e1e2e] text-[#89b4fa] rounded-lg border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all font-semibold text-xs"
-                >
-                  ⚙️ Réglages
-                </button>
-              </div>
+            {/* Mode Selection Buttons right under logo */}
+            <div className="flex gap-2 justify-center pt-1 pb-1">
+              <button
+                type="button"
+                onClick={() => handleSelectThemeMode('standard')}
+                className={`flex-1 py-2 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                  themeMode === 'standard'
+                    ? 'bg-[#89b4fa] text-[#11111b] border-[#89b4fa] shadow-md'
+                    : 'bg-[#313244] text-[#cdd6f4] border-[#45475a] hover:bg-[#45475a]'
+                }`}
+              >
+                <Radio className="w-3.5 h-3.5" />
+                <span>Mode Standard</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectThemeMode('ridialart')}
+                className={`flex-1 py-2 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                  themeMode === 'ridialart'
+                    ? 'bg-gradient-to-r from-[#d97706] to-[#f59e0b] text-[#1c0f04] border-[#fbbf24] shadow-md'
+                    : 'bg-[#313244] text-[#fbbf24] border-[#45475a] hover:bg-[#45475a]'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#fbbf24]" />
+                <span>Mode RidiaLArt</span>
+              </button>
             </div>
 
             {/* Mode Switcher: Mode Standard vs Traitement par lots */}
@@ -1403,19 +1503,19 @@ ${item.text}`;
                 onClick={() => setHomeMode('single')}
                 className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
                   homeMode === 'single'
-                    ? 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
                     : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
                 }`}
               >
                 <Mic className="w-3.5 h-3.5" />
-                <span>Mode Standard (Texte unique)</span>
+                <span>Texte unique</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHomeMode('batch')}
                 className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
                   homeMode === 'batch'
-                    ? 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
                     : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
                 }`}
               >
@@ -1431,6 +1531,60 @@ ${item.text}`;
 
             {homeMode === 'single' ? (
               <>
+
+
+                {/* ACTIVE RHYTHM BACKING TRACK CONTROLLER */}
+                {activeBackingTrack && (
+                  <div className="bg-[#241307] p-3 rounded-xl border border-[#fbbf24]/50 flex items-center justify-between gap-3 text-xs shadow-md">
+                    <div className="flex items-center gap-2 truncate">
+                      <Disc className="w-4 h-4 text-[#fbbf24] animate-spin shrink-0" style={{ animationDuration: isBackingTrackPlaying ? '2s' : '10s' }} />
+                      <div className="truncate">
+                        <span className="text-[10px] text-[#fde68a]/60 block">Accompagnement rythmique actif :</span>
+                        <span className="text-[#fbbf24] font-bold truncate">{activeBackingTrack.title}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <audio
+                        ref={backingAudioRef}
+                        src={activeBackingTrack.url}
+                        loop
+                        onPlay={() => setIsBackingTrackPlaying(true)}
+                        onPause={() => setIsBackingTrackPlaying(false)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (backingAudioRef.current) {
+                            if (isBackingTrackPlaying) {
+                              backingAudioRef.current.pause();
+                            } else {
+                              backingAudioRef.current.play();
+                            }
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                          isBackingTrackPlaying
+                            ? 'bg-[#ef4444] text-white'
+                            : 'bg-gradient-to-r from-[#d97706] to-[#f59e0b] text-[#1c0f04]'
+                        }`}
+                      >
+                        {isBackingTrackPlaying ? '⏸️ Pause Beat' : '▶️ Lancer Beat'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (backingAudioRef.current) backingAudioRef.current.pause();
+                          setActiveBackingTrack(null);
+                          setIsBackingTrackPlaying(false);
+                        }}
+                        className="p-1.5 text-xs text-[#f87171] hover:bg-[#ef4444]/20 rounded transition-all"
+                        title="Retirer cet accompagnement"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {isQuotaError && (
                   <div className="p-4 rounded-xl bg-red-500/20 border border-red-500/30 text-red-200 text-xs space-y-3">
                     <div className="flex items-center gap-2 font-bold text-red-300">
@@ -1615,7 +1769,26 @@ ${item.text}`;
 
                 {currentAudioUrl && (
                   <div className="pt-3 space-y-4">
-                    <audio ref={audioRef} controls className="w-full accent-[#89b4fa]" src={currentAudioUrl} />
+                    <audio
+                      ref={audioRef}
+                      controls
+                      className={`w-full ${themeMode === 'ridialart' ? 'accent-[#fbbf24]' : 'accent-[#89b4fa]'}`}
+                      src={currentAudioUrl}
+                      onPlay={() => setIsAudioPlaying(true)}
+                      onPause={() => setIsAudioPlaying(false)}
+                      onEnded={() => setIsAudioPlaying(false)}
+                    />
+
+                    {/* RIDIALART PLASTIC SYNESTHESIA CANVAS */}
+                    {themeMode === 'ridialart' && (
+                      <PlasticSynesthesiaCanvas
+                        audioElement={audioRef.current}
+                        audioUrl={currentAudioUrl}
+                        isPlaying={isAudioPlaying}
+                        themeMode={themeMode}
+                        title={saveTitle || 'Voix_VoxArt'}
+                      />
+                    )}
 
                     {/* TRIMMER RANGE SLIDER UI */}
                     <div className="bg-[#313244]/60 p-4 rounded-xl border border-[#45475a] space-y-3">
@@ -2125,6 +2298,17 @@ ${item.text}`;
           </div>
         )}
 
+        {/* AFRICAN RHYTHM STUDIO VIEW (COMPOSITION, EFFETS, EXPORT WAV & BIBLIO) */}
+        {currentView === 'rhythm_studio' && (
+          <AfricanRhythmStudio
+            onBackToStudio={() => setCurrentView('home')}
+            onSaveToLibrary={handleSaveRhythmToLibrary}
+            onUseAsBackingTrack={handleUseRhythmAsBackingTrack}
+            existingProjects={Object.keys(library)}
+            initialComposition={studioComposition}
+          />
+        )}
+
         {/* LIBRARY VIEW */}
         {currentView === 'library' && (
           <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-6 shadow-xl space-y-4">
@@ -2253,10 +2437,52 @@ ${item.text}`;
                         {pData.audios.length === 0 ? (
                           <div className="text-[11px] text-[#6c7086]">Aucun audio</div>
                         ) : (
-                          pData.audios.map((item, idx) => (
-                            <div key={item.id} className="flex items-center justify-between bg-[#1e1e2e] p-2 rounded-lg text-xs">
-                              <span className="truncate max-w-[140px] sm:max-w-[200px]">🎧 {item.name}</span>
-                              <div className="flex items-center gap-1.5">
+                          pData.audios.map((item, idx) => {
+                            const isRhythm = item.name.includes('[Rythme]');
+                            return (
+                            <div key={item.id} className={`flex items-center justify-between p-2 rounded-lg text-xs ${isRhythm ? 'bg-[#241307] border border-[#fbbf24]/30' : 'bg-[#1e1e2e]'}`}>
+                              <div className="flex items-center gap-1.5 truncate max-w-[130px] sm:max-w-[190px]">
+                                <span>{isRhythm ? '🥁' : '🎧'}</span>
+                                <span className={`truncate font-medium ${isRhythm ? 'text-[#fbbf24]' : 'text-[#cdd6f4]'}`}>
+                                  {item.name}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {isRhythm && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        try {
+                                          const savedComps = JSON.parse(localStorage.getItem('voxart_saved_compositions') || '{}');
+                                          if (savedComps[item.name]) {
+                                            setStudioComposition(savedComps[item.name]);
+                                          }
+                                        } catch (e) {
+                                          // ignore
+                                        }
+                                        setCurrentView('rhythm_studio');
+                                      }}
+                                      className="px-2 py-1 bg-[#d97706]/25 hover:bg-[#d97706]/45 text-[#fbbf24] border border-[#fbbf24]/40 rounded text-[10px] font-bold"
+                                      title="Éditer cette partition dans l'Atelier de Rythmes"
+                                    >
+                                      🎛️ Éditer
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveBackingTrack({ url: item.data, title: item.name });
+                                        setIsBackingTrackPlaying(false);
+                                        showToast(`Boucle "${item.name}" chargée comme accompagnement du studio vocal !`, "success");
+                                        setCurrentView('home');
+                                      }}
+                                      className="px-2 py-1 bg-[#ea580c]/25 hover:bg-[#ea580c]/45 text-[#fdba74] border border-[#ea580c]/40 rounded text-[10px] font-bold"
+                                      title="Utiliser en boucle de fond pour la voix"
+                                    >
+                                      🎙️ Fond
+                                    </button>
+                                  </>
+                                )}
                                 <button
                                   onClick={() => renameAudioItem(proj, idx)}
                                   className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] rounded text-[11px]"
@@ -2305,7 +2531,8 @@ ${item.text}`;
                                 </button>
                               </div>
                             </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
 
@@ -2498,6 +2725,15 @@ ${item.text}`;
               ⬅️ Retour à l'accueil
             </button>
 
+            {/* Thématique & Mode du Studio */}
+            <div className="space-y-2 pt-2">
+              <label className="block text-xs font-semibold text-[#a6adc8]">Thématique active & Mode du Studio :</label>
+              <ThemeModeSelector
+                currentMode={themeMode}
+                onSelectMode={handleSelectThemeMode}
+              />
+            </div>
+
             <div className="space-y-1 mt-3">
               <label className="block text-xs font-semibold text-[#a6adc8]">Clé API Google Gemini :</label>
               <input
@@ -2520,6 +2756,7 @@ ${item.text}`;
                   onChange={(e) => handleDomainChange(e.target.value)}
                   className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm"
                 >
+                  <option value="ridialart">⚡ RidiaLArt — Afrofuturisme Endogène & Oralité</option>
                   <option value="art">Création Artistique, Poésie & Conte</option>
                   <option value="cinema">Cinéma, Voix Off & Storytelling</option>
                   <option value="education">Pédagogie & Formation</option>
@@ -2594,6 +2831,20 @@ ${item.text}`;
                 </select>
               </div>
             </div>
+
+            {themeMode === 'ridialart' && (
+              <div className="bg-[#2d1807]/80 p-3.5 rounded-xl border border-[#fbbf24]/30 space-y-2 text-xs">
+                <div className="font-bold text-[#fbbf24] flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-[#fbbf24]" />
+                  <span>Modules RidiaLArt & Afrofuturisme Endogène Actifs</span>
+                </div>
+                <ul className="text-[11px] text-[#fde68a]/80 space-y-1 list-disc list-inside">
+                  <li><strong>Polyrythmies Djembé & Sabar</strong> : Algorithmes euclidiens (Doundounba 12/8, Kuku, Sabar Kaolack, Dub Roots Sénégal).</li>
+                  <li><strong>Synesthésie Plastique</strong> : Traduction spectrale FFT de la voix en ondes de forme et couleurs d'Afrique (or impérial, indigo, latérite).</li>
+                  <li><strong>Export de la Toile Plastique</strong> : Téléchargement en PNG HD de l'empreinte graphique générée par votre audio.</li>
+                </ul>
+              </div>
+            )}
 
             <div className="bg-[#313244] p-3 rounded-xl space-y-2">
               <label className="block text-xs font-semibold text-[#a6adc8]">Test rapide des réglages :</label>
@@ -2698,6 +2949,9 @@ ${item.text}`;
           </div>
         </div>
       )}
+
+      {/* AI Agent Chat Widget */}
+      <AIAgentChat currentText={text} apiKey={apiKey} addToast={showToast} />
     </div>
   );
 }

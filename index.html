@@ -5,22 +5,118 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VoxArt - Studio RidiaLArt-Vision</title>
     <script>
-      // Suppress benign Vite HMR WebSocket connection errors in sandboxed / iframe environments
-      window.addEventListener('error', function(event) {
-        var msg = (event && (event.message || (event.error && event.error.message))) || '';
-        if (typeof msg === 'string' && (msg.includes('WebSocket') || msg.includes('[vite]') || msg.includes('vite:'))) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          return true;
-        }
-      }, true);
-      window.addEventListener('unhandledrejection', function(event) {
-        var reasonMsg = (event && event.reason && (event.reason.message || event.reason)) || '';
-        if (typeof reasonMsg === 'string' && (reasonMsg.includes('WebSocket') || reasonMsg.includes('[vite]'))) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }
-      });
+      (function() {
+        // Vite HMR is disabled in this hosted container/sandbox environment.
+        // Shim Vite HMR WebSocket connections to cleanly handle client transport without errors.
+        try {
+          var NativeWebSocket = window.WebSocket;
+          if (NativeWebSocket) {
+            window.WebSocket = function(url, protocols) {
+              var urlStr = String(url || '');
+              var isViteHmr = urlStr.indexOf('vite-hmr') !== -1 || 
+                              urlStr.indexOf(':24678') !== -1 || 
+                              urlStr.indexOf('token=') !== -1 || 
+                              (Array.isArray(protocols) ? protocols.indexOf('vite-hmr') !== -1 : protocols === 'vite-hmr');
+              
+              if (isViteHmr) {
+                var listeners = {};
+                var dummyWs = {
+                  url: urlStr,
+                  protocol: 'vite-hmr',
+                  readyState: 1, // WebSocket.OPEN
+                  bufferedAmount: 0,
+                  extensions: '',
+                  binaryType: 'blob',
+                  CONNECTING: 0,
+                  OPEN: 1,
+                  CLOSING: 2,
+                  CLOSED: 3,
+                  onopen: null,
+                  onclose: null,
+                  onerror: null,
+                  onmessage: null,
+                  addEventListener: function(type, listener) {
+                    if (!listeners[type]) listeners[type] = [];
+                    listeners[type].push(listener);
+                    if (type === 'open') {
+                      setTimeout(function() {
+                        var ev = new Event('open');
+                        if (typeof dummyWs.onopen === 'function') dummyWs.onopen(ev);
+                        if (typeof listener === 'function') listener(ev);
+                      }, 0);
+                    }
+                  },
+                  removeEventListener: function(type, listener) {
+                    if (listeners[type]) {
+                      listeners[type] = listeners[type].filter(function(l) { return l !== listener; });
+                    }
+                  },
+                  dispatchEvent: function() {
+                    return true;
+                  },
+                  send: function() {},
+                  close: function() {
+                    dummyWs.readyState = 3;
+                  }
+                };
+                return dummyWs;
+              }
+              return new NativeWebSocket(url, protocols);
+            };
+            window.WebSocket.prototype = NativeWebSocket.prototype;
+            window.WebSocket.CONNECTING = 0;
+            window.WebSocket.OPEN = 1;
+            window.WebSocket.CLOSING = 2;
+            window.WebSocket.CLOSED = 3;
+          }
+        } catch (e) {}
+
+        // Suppress benign Vite HMR logs, user share cancellations, and harmless preview events
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var msg = args.map(function(a) { return (typeof a === 'string' ? a : (a && (a.message || a.name)) || ''); }).join(' ');
+          if (
+            msg.indexOf('WebSocket') !== -1 || 
+            msg.indexOf('[vite] failed to connect') !== -1 || 
+            msg.indexOf('vite-hmr') !== -1 ||
+            msg.indexOf('Share canceled') !== -1 ||
+            msg.indexOf('AbortError') !== -1
+          ) {
+            return;
+          }
+          return origConsoleError.apply(console, args);
+        };
+
+        window.addEventListener('error', function(event) {
+          var msg = (event && (event.message || (event.error && (event.error.message || event.error.name)))) || '';
+          if (typeof msg === 'string' && (
+            msg.indexOf('WebSocket') !== -1 || 
+            msg.indexOf('[vite]') !== -1 || 
+            msg.indexOf('vite:') !== -1 ||
+            msg.indexOf('Share canceled') !== -1 ||
+            msg.indexOf('AbortError') !== -1
+          )) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var reasonMsg = (reason && (reason.message || reason.name || String(reason))) || '';
+          if (typeof reasonMsg === 'string' && (
+            reasonMsg.indexOf('WebSocket') !== -1 || 
+            reasonMsg.indexOf('[vite]') !== -1 ||
+            reasonMsg.indexOf('Share canceled') !== -1 ||
+            reasonMsg.indexOf('AbortError') !== -1
+          )) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        });
+      })();
     </script>
     <meta name="description" content="VoxArt Studio RidiaLArt-Vision — Studio professionnel de synthèse vocale par IA text-to-speech propulsé par Google Gemini avec gestion de scripts, sous-titres et projets." />
     <meta property="og:title" content="VoxArt - Studio RidiaLArt-Vision" />

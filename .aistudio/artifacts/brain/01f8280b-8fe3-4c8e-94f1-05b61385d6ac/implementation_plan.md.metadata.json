@@ -1,0 +1,6 @@
+{
+  "summary": "Plan d'architecture et de mise en œuvre pour le Studio de Composition Polyrythmique et Traitement d'Effets Africains (RidiaLArt Vision) :\n- Sous-section intégrée accessible en Mode RidiaLArt avec grille matricielle de composition (12/8 et 4/4)\n- Banque d'échantillons réalistes pour instruments africains (Djembé Bass/Ton/Claque, Sabar Kaolack, Tama parlant, Balafon, Calebasse, Cloche)\n- Presets de partition traditionnels (Sabar Kaolack, Mandingue Doundounba, Kuku, Griot Royal, Dub Roots)\n- Chaîne d'effets sonores complète (Reverb calebasse, Dub tape delay, Warmth filter, Spatialisation stéréo)\n- Moteur d'exportation WAV Master haute fidélité (OfflineAudioContext) et intégration directe en fond sonore pour le Studio Voix\n- Bibliothèque de boucles personnalisées avec sauvegarde, modification et téléchargement de production.",
+  "updatedAt": "2026-10-13T12:25:41.032403356Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

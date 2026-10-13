@@ -179,19 +179,29 @@ Options de styles disponibles dans VoxArt :
    - Label: "Naturel & Expressif"
      Val: "voix naturelle, humaine, chaleureuse et équilibrée"
 
+7. Domaine "ridialart" (Afrofuturisme Endogène & Oralité Africaine) :
+   - Label: "Taasu & Scansion Oratoire"
+     Val: "déclamation oratoire scandée dans la tradition du Taasu sénégalais, tempo percutant, verve poétique, assonances rythmées et souffle habité"
+   - Label: "Griot & Épopée Ancestrale"
+     Val: "voix de griot gardien des récits sacrés, louanges solennelles, voix texturée, habitée par l'oralité et les généalogies"
+   - Label: "Synesthésie Plastique RidiaLArt"
+     Val: "prosodie artistique et synesthésique reliant le verbe à la matière, variations de dynamique, résonance de calebasse et de djembé"
+   - Label: "Dub Roots & Poésie Mystique"
+     Val: "déclamation méditative, phrasé profond et posé, présence chaleureuse imprégnée d'écho spatial et de spiritualité"
+
 Texte à analyser :
 """
 ${text.slice(0, 3000)}
 """
 
 Retourne impérativement un objet JSON strict avec :
-- sentiment: "Positif / Enthousiaste" | "Dramatique / Sombre" | "Poétique / Méditatif" | "Éducatif / Explicatif" | "Énergique / Promotionnel" | "Informatif / Neutre"
-- moodEmoji: emoji représentatif (ex: 🎭, ✨, 🔥, 📖, ⚡, 🎙️)
+- sentiment: "Positif / Enthousiaste" | "Dramatique / Sombre" | "Poétique / Méditatif" | "Éducatif / Explicatif" | "Énergique / Promotionnel" | "Informatif / Neutre" | "Oralité Sacrée / Griot / Taasu"
+- moodEmoji: emoji représentatif (ex: 🎭, ✨, 🔥, 📖, ⚡, 🎙️, 🥁)
 - explanation: une brève explication (max 1 phrase percutante en français) de pourquoi ce style sublime le texte.
-- suggestedDomain: le domaine correspondant exactement ("art" | "cinema" | "education" | "marketing" | "journalism" | "general")
+- suggestedDomain: le domaine correspondant exactement ("art" | "cinema" | "education" | "marketing" | "journalism" | "general" | "ridialart")
 - suggestedStyleLabel: le label exact du style choisi
 - suggestedStyleVal: la valeur textuelle exacte 'val' du style
-- speechPaceTip: conseil expressif de tempo ("Tempo modéré avec pauses", "Rythme vif et soutenu", "Prosodie lente et solennelle", etc.)`;
+- speechPaceTip: conseil expressif de tempo ("Tempo modéré avec pauses", "Rythme vif et soutenu", "Scansion cadencée avec silences habités", etc.)`;
 
       const response = await effectiveAi.models.generateContent({
         model: "gemini-3.8-flash",
@@ -210,10 +220,49 @@ Retourne impérativement un objet JSON strict avec :
     }
   });
 
+  // AI Agent Chat Endpoint powered by Gemini Flash (gemini-3.8-flash)
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const { messages, currentText, apiKey: clientApiKey } = req.body;
+      const effectiveAi = clientApiKey
+        ? new GoogleGenAI({ apiKey: clientApiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : ai;
+
+      const systemInstruction = `Tu es l'agent IA expert en narration, dramaturgie et création endogène pour VoxArt / Studio RidiaLArt-Vision.
+Tu aides les créateurs, conteurs, slameurs et réalisateurs à optimiser leurs scripts, enrichir leurs ambiances sonores (kora, flûte peulh, riti, chants rituels, bruits de nature/village) et perfectionner leur prosodie.
+Le créateur travaille actuellement sur le texte suivant dans l'éditeur :
+---
+${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
+---
+Sois inspirant, constructif, ancré dans l'oralité africaine et l'afrofuturisme, et donne des conseils percutants en français. Réponds de façon claire et structurée.`;
+
+      const chatHistory = (messages || []).slice(0, -1).map((m: any) => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }]
+      }));
+
+      const chat = effectiveAi.chats.create({
+        model: "gemini-3.8-flash",
+        config: {
+          systemInstruction: systemInstruction,
+        },
+        history: chatHistory,
+      });
+
+      const lastMessage = messages[messages.length - 1]?.content || "Bonjour";
+      const result = await chat.sendMessage({ message: lastMessage });
+      res.json({ reply: result.text || "Je n'ai pas pu générer de réponse." });
+    } catch (err: any) {
+      console.error("AI Chat Error:", err);
+      res.status(500).json({ error: err.message || "Erreur lors de la communication avec l'agent Gemini." });
+    }
+  });
+
   // Setup Vite middleware with HMR disabled to avoid WebSocket disconnects in iframe/proxy
   const vite = await createViteServer({
     server: {
       middlewareMode: true,
+      allowedHosts: true,
       hmr: false,
     },
     appType: 'spa',
