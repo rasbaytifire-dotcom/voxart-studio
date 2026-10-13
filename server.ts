@@ -210,9 +210,12 @@ Retourne impérativement un objet JSON strict avec :
     }
   });
 
-  // Setup Vite middleware
+  // Setup Vite middleware with HMR disabled to avoid WebSocket disconnects in iframe/proxy
   const vite = await createViteServer({
-    server: { middlewareMode: true },
+    server: {
+      middlewareMode: true,
+      hmr: false,
+    },
     appType: 'spa',
   });
 

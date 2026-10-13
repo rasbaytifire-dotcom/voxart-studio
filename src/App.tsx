@@ -8,7 +8,7 @@ import {
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
   Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
-  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp
+  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -179,6 +179,57 @@ export default function App() {
   const [batchCurrentIndex, setBatchCurrentIndex] = useState<number>(-1);
   const [batchDelayCountdown, setBatchDelayCountdown] = useState<number>(0);
   const [batchSequentialPlayingIndex, setBatchSequentialPlayingIndex] = useState<number | null>(null);
+
+  // Toast Notification System
+  interface ToastItem {
+    id: number;
+    message: string;
+    type: 'success' | 'error' | 'info';
+  }
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4000);
+  };
+
+  // Safe Dialog Modal System (replaces window.prompt & window.confirm for iframe compliance)
+  interface DialogConfig {
+    isOpen: boolean;
+    type: 'prompt' | 'confirm';
+    title: string;
+    message?: string;
+    defaultValue?: string;
+    confirmText?: string;
+    onConfirm: (val: string) => void;
+  }
+  const [dialog, setDialog] = useState<DialogConfig | null>(null);
+  const [dialogInputVal, setDialogInputVal] = useState('');
+
+  const openPromptDialog = (title: string, defaultValue: string, onConfirm: (val: string) => void) => {
+    setDialogInputVal(defaultValue);
+    setDialog({
+      isOpen: true,
+      type: 'prompt',
+      title,
+      defaultValue,
+      confirmText: 'Valider',
+      onConfirm
+    });
+  };
+
+  const openConfirmDialog = (title: string, message: string, onConfirm: () => void) => {
+    setDialog({
+      isOpen: true,
+      type: 'confirm',
+      title,
+      message,
+      confirmText: 'Confirmer',
+      onConfirm: () => onConfirm()
+    });
+  };
 
   // Sentiment Analysis State & Expressiveness Optimizer
   const [isAnalyzingSentiment, setIsAnalyzingSentiment] = useState(false);
@@ -390,9 +441,22 @@ export default function App() {
     };
   }, [retryCountdown, isQuotaError]);
 
+  const cancelQuotaRetry = () => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    setIsQuotaError(false);
+    setRetryCountdown(0);
+    setStatusMsg("File d'attente automatique interrompue.");
+    showToast("File d'attente automatique interrompue.", "info");
+  };
+
   const saveLibraryToStorage = (lib: Record<string, ProjectData>) => {
     setLibrary(lib);
-    localStorage.setItem('voxart_library', JSON.stringify(lib));
+    try {
+      localStorage.setItem('voxart_library', JSON.stringify(lib));
+    } catch (e: any) {
+      console.warn("Storage quota exceeded:", e);
+      showToast("Quota de stockage local atteint ! Pensez à exporter vos projets en ZIP ou JSON.", "error");
+    }
   };
 
   const handleDomainChange = (newDomain: string) => {
@@ -522,13 +586,13 @@ export default function App() {
       window.speechSynthesis.speak(utterance);
       setStatusMsg("Lecture de secours via la synthèse vocale du navigateur en cours...");
     } else {
-      alert("La synthèse vocale du navigateur n'est pas supportée sur cet appareil.");
+      showToast("La synthèse vocale du navigateur n'est pas supportée sur cet appareil.", "error");
     }
   };
 
   const handlePreview = () => {
     if (!text.trim()) {
-      alert("Veuillez saisir un texte à convertir.");
+      showToast("Veuillez saisir un texte à convertir.", "info");
       return;
     }
     generateTTS(text, false);
@@ -641,7 +705,7 @@ export default function App() {
     if (targetProj === '__NEW__' || !targetProj) {
       targetProj = newProjectName.trim();
       if (!targetProj) {
-        alert("Veuillez saisir un nom pour le nouveau projet.");
+        showToast("Veuillez saisir un nom pour le nouveau projet.", "error");
         return;
       }
     }
@@ -669,7 +733,7 @@ export default function App() {
     });
 
     saveLibraryToStorage(updatedLib);
-    alert(`Enregistré avec succès dans le projet "${targetProj}" (Studio RidiaLArt-Vision) !`);
+    showToast(`Enregistré avec succès dans le projet "${targetProj}" (Studio RidiaLArt-Vision) !`, "success");
     setCurrentView('library');
   };
 
@@ -695,9 +759,10 @@ export default function App() {
       a.href = url;
       a.download = `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_archive.zip`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
     } catch (e) {
       console.error("ZIP Export Error:", e);
-      alert("Erreur lors de la création de l'archive ZIP.");
+      showToast("Erreur lors de la création de l'archive ZIP.", "error");
     }
   };
 
@@ -716,6 +781,7 @@ export default function App() {
     a.href = url;
     a.download = `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_share.json`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
 
   const handleImportProjectJson = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -729,13 +795,13 @@ export default function App() {
         if (parsed.projectName && parsed.projectData) {
           const updated = { ...library, [parsed.projectName]: parsed.projectData };
           saveLibraryToStorage(updated);
-          alert(`Projet "${parsed.projectName}" importé avec succès dans la bibliothèque VoxArt !`);
+          showToast(`Projet "${parsed.projectName}" importé avec succès dans la bibliothèque VoxArt !`, "success");
         } else {
-          alert("Format de fichier de partage VoxArt invalide.");
+          showToast("Format de fichier de partage VoxArt invalide.", "error");
         }
       } catch (err) {
         console.error(err);
-        alert("Erreur lors de l'importation du fichier projet.");
+        showToast("Erreur lors de l'importation du fichier projet.", "error");
       }
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
@@ -745,11 +811,11 @@ export default function App() {
   const handleCreateLibraryProject = () => {
     const pName = libNewProjectName.trim();
     if (!pName) {
-      alert("Veuillez saisir un nom pour le nouveau projet.");
+      showToast("Veuillez saisir un nom pour le nouveau projet.", "error");
       return;
     }
     if (library[pName]) {
-      alert("Un projet avec ce nom existe déjà dans la bibliothèque.");
+      showToast("Un projet avec ce nom existe déjà dans la bibliothèque.", "error");
       return;
     }
     const updated = {
@@ -758,44 +824,50 @@ export default function App() {
     };
     saveLibraryToStorage(updated);
     setLibNewProjectName('');
-    alert(`Projet "${pName}" créé avec succès !`);
+    showToast(`Projet "${pName}" créé avec succès !`, "success");
   };
 
   const renameProject = (oldName: string) => {
-    const newName = prompt("Nouveau nom du projet :", oldName);
-    if (newName && newName.trim() !== oldName) {
-      const trimmed = newName.trim();
-      if (library[trimmed]) {
-        alert("Un projet portant ce nom existe déjà.");
-        return;
+    openPromptDialog("Renommer le projet", oldName, (newName) => {
+      if (newName && newName.trim() && newName.trim() !== oldName) {
+        const trimmed = newName.trim();
+        if (library[trimmed]) {
+          showToast("Un projet portant ce nom existe déjà.", "error");
+          return;
+        }
+        const updated = { ...library };
+        updated[trimmed] = updated[oldName];
+        delete updated[oldName];
+        saveLibraryToStorage(updated);
+        showToast(`Projet renommé en "${trimmed}".`, "success");
       }
-      const updated = { ...library };
-      updated[trimmed] = updated[oldName];
-      delete updated[oldName];
-      saveLibraryToStorage(updated);
-    }
+    });
   };
 
   const renameAudioItem = (proj: string, idx: number) => {
     const item = library[proj]?.audios[idx];
     if (!item) return;
-    const newName = prompt("Nouveau nom du fichier audio :", item.name);
-    if (newName) {
-      const updated = { ...library };
-      updated[proj].audios[idx].name = newName.trim();
-      saveLibraryToStorage(updated);
-    }
+    openPromptDialog("Renommer le fichier audio", item.name, (newName) => {
+      if (newName && newName.trim()) {
+        const updated = { ...library };
+        updated[proj].audios[idx].name = newName.trim();
+        saveLibraryToStorage(updated);
+        showToast("Fichier audio renommé.", "success");
+      }
+    });
   };
 
   const renameTextItem = (proj: string, idx: number) => {
     const item = library[proj]?.texts[idx];
     if (!item) return;
-    const newName = prompt("Nouveau nom du fichier texte :", item.name);
-    if (newName) {
-      const updated = { ...library };
-      updated[proj].texts[idx].name = newName.trim();
-      saveLibraryToStorage(updated);
-    }
+    openPromptDialog("Renommer le fichier texte", item.name, (newName) => {
+      if (newName && newName.trim()) {
+        const updated = { ...library };
+        updated[proj].texts[idx].name = newName.trim();
+        saveLibraryToStorage(updated);
+        showToast("Fichier texte renommé.", "success");
+      }
+    });
   };
 
   const shareAudioItem = async (base64Data: string, filename: string) => {
@@ -810,7 +882,7 @@ export default function App() {
           text: `VoxArt (Studio RidiaLArt-Vision) - Fichier audio : ${filename}`
         });
       } else {
-        alert("Le partage de fichiers n'est pas pris en charge par votre navigateur. Utilisez le téléchargement ⬇️.");
+        showToast("Le partage de fichiers n'est pas pris en charge par votre navigateur. Utilisez le téléchargement ⬇️.", "info");
       }
     } catch (err) {
       console.error(err);
@@ -830,7 +902,7 @@ export default function App() {
       } else if (navigator.share) {
         await navigator.share({ title: filename, text: textContent });
       } else {
-        alert("Partage non supporté.");
+        showToast("Partage non supporté sur ce navigateur.", "info");
       }
     } catch (err) {
       console.error(err);
@@ -956,7 +1028,7 @@ export default function App() {
 
   const runBatchQueue = async () => {
     if (batchQueue.length === 0) {
-      alert("Veuillez d'abord découper un texte ou importer un fichier.");
+      showToast("Veuillez d'abord découper un texte ou importer un fichier.", "info");
       return;
     }
     const targetProj = batchTargetProject.trim() || 'Projet_Lots';
@@ -1168,7 +1240,7 @@ ${item.text}`;
       .filter(item => item.status === 'completed' && item.audioUrl);
 
     if (completedItems.length === 0) {
-      alert("Aucun clip audio terminé à lire.");
+      showToast("Aucun clip audio terminé à lire.", "info");
       return;
     }
 
@@ -1368,16 +1440,22 @@ ${item.text}`;
                     <p className="leading-relaxed">
                       Le système a appliqué un backoff exponentiel. Rétablissement estimé dans : <strong className="text-white font-mono text-sm">{retryCountdown}s</strong>
                     </p>
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
                       <button
                         onClick={() => { setRetryCountdown(0); handlePreview(); }}
-                        className="flex-1 py-2 rounded-lg bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-all"
+                        className="flex-1 min-w-[120px] py-2 rounded-lg bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-all"
                       >
                         Réessayer maintenant
                       </button>
                       <button
+                        onClick={cancelQuotaRetry}
+                        className="py-2 px-3 rounded-lg bg-red-950/60 text-red-300 border border-red-500/30 hover:bg-red-900/60 font-semibold text-xs transition-all"
+                      >
+                        Annuler la file
+                      </button>
+                      <button
                         onClick={handleBrowserSpeechFallback}
-                        className="flex-1 py-2 rounded-lg bg-[#313244] text-[#89b4fa] border border-[#89b4fa]/40 font-bold text-xs hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
+                        className="flex-1 min-w-[140px] py-2 rounded-lg bg-[#313244] text-[#89b4fa] border border-[#89b4fa]/40 font-bold text-xs hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
                       >
                         🔊 Secours Navigateur
                       </button>
@@ -1884,7 +1962,7 @@ ${item.text}`;
                               if (projData) {
                                 exportProjectAsZip(batchTargetProject.trim() || 'Projet_Lots', projData);
                               } else {
-                                alert("Le projet n'est pas encore enregistré dans la bibliothèque.");
+                                showToast("Le projet n'est pas encore enregistré dans la bibliothèque.", "info");
                               }
                             }}
                             className="py-2.5 px-3 rounded-xl bg-[#a6e3a1]/20 hover:bg-[#a6e3a1]/30 text-[#a6e3a1] border border-[#a6e3a1]/40 font-semibold text-xs flex items-center gap-1.5 transition-all"
@@ -2151,11 +2229,16 @@ ${item.text}`;
                           </button>
                           <button
                             onClick={() => {
-                              if (confirm(`Supprimer tout le projet "${proj}" ?`)) {
-                                const updated = { ...library };
-                                delete updated[proj];
-                                saveLibraryToStorage(updated);
-                              }
+                              openConfirmDialog(
+                                "Supprimer le projet",
+                                `Êtes-vous sûr de vouloir supprimer définitivement le projet "${proj}" et tout son contenu ?`,
+                                () => {
+                                  const updated = { ...library };
+                                  delete updated[proj];
+                                  saveLibraryToStorage(updated);
+                                  showToast(`Projet "${proj}" supprimé.`, "info");
+                                }
+                              );
                             }}
                             className="px-2.5 py-1 rounded bg-red-500/20 text-red-400 text-xs font-semibold hover:bg-red-500/30"
                           >
@@ -2537,6 +2620,84 @@ ${item.text}`;
         )}
 
       </main>
+
+      {/* Toast Notifications */}
+      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+        {toasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md border text-xs sm:text-sm font-medium transition-all transform animate-in fade-in slide-in-from-bottom-2 ${
+              toast.type === 'error'
+                ? 'bg-red-950/90 border-red-500/50 text-red-200'
+                : toast.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
+                : 'bg-[#1e1e2e]/95 border-[#89b4fa]/40 text-[#cdd6f4]'
+            }`}
+          >
+            {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
+            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-[#89b4fa] shrink-0" />}
+            <span className="flex-1">{toast.message}</span>
+            <button
+              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+              className="p-1 hover:bg-white/10 rounded transition-all text-[#a6adc8] hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Safe Modal Dialog for Prompt and Confirm (Iframe & sandboxing friendly) */}
+      {dialog && dialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#1e1e2e] border border-[#45475a] p-6 rounded-2xl max-w-md w-full shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-[#89b4fa] flex items-center gap-2">
+              <Sparkles className="w-4 h-4" />
+              <span>{dialog.title}</span>
+            </h3>
+            {dialog.message && (
+              <p className="text-sm text-[#a6adc8] leading-relaxed">{dialog.message}</p>
+            )}
+            {dialog.type === 'prompt' && (
+              <input
+                type="text"
+                autoFocus
+                value={dialogInputVal}
+                onChange={(e) => setDialogInputVal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    dialog.onConfirm(dialogInputVal);
+                    setDialog(null);
+                  } else if (e.key === 'Escape') {
+                    setDialog(null);
+                  }
+                }}
+                className="w-full p-3 rounded-xl border border-[#45475a] bg-[#313244] text-[#cdd6f4] text-sm focus:outline-none focus:border-[#89b4fa] ring-1 ring-transparent focus:ring-[#89b4fa]/30 transition-all"
+              />
+            )}
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDialog(null)}
+                className="px-4 py-2 rounded-xl bg-[#313244] text-[#a6adc8] hover:text-white hover:bg-[#45475a] text-xs font-semibold transition-all"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  dialog.onConfirm(dialogInputVal);
+                  setDialog(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-[#89b4fa] text-[#11111b] font-bold text-xs hover:bg-[#b4befe] transition-all shadow-md"
+              >
+                {dialog.confirmText || 'Confirmer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
