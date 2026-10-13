@@ -1,0 +1,8 @@
+{
+  "name": "VoxStudio — AI Text-to-Audio PWA",
+  "description": "Professional AI Text-to-Audio Studio powered by Google Gemini with multi-voice support, podcast screenplay mode, pitch/speed control, WAV generation, audio history, and PWA installability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
