@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Gradle start up script for POSIX systems
+# Resolves gradlew or uses installed gradle if available
+
+set -e
+
+DIRNAME="$(cd "$(dirname "$0")" && pwd)"
+
+if command -v gradle >/dev/null 2>&1; then
+    exec gradle "$@"
+elif [ -f "$DIRNAME/gradle/wrapper/gradle-wrapper.jar" ]; then
+    exec java -jar "$DIRNAME/gradle/wrapper/gradle-wrapper.jar" "$@"
+else
+    echo "Gradle not found. Please install gradle or run via GitHub Actions."
+    exit 1
+fi

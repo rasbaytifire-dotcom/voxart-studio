@@ -116,7 +116,7 @@ export const PWAInstallBanner: React.FC = () => {
 
 export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { isInstallable, isIOS, install } = usePWAInstall();
-  const [selectedTab, setSelectedTab] = useState<'android' | 'ios' | 'desktop'>(isIOS ? 'ios' : 'android');
+  const [selectedTab, setSelectedTab] = useState<'apk' | 'android' | 'ios' | 'desktop'>('apk');
   const [copied, setCopied] = useState(false);
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
   const currentUrl = typeof window !== 'undefined' ? window.location.href : 'https://ais-pre-i3grmt5zrq7cmfq7wtekw6-386454114574.europe-west2.run.app';
@@ -140,12 +140,12 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
         </button>
 
         <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#89b4fa] via-[#b4befe] to-[#cba6f7] flex items-center justify-center text-[#11111b] font-black shadow-lg">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-500 flex items-center justify-center text-white font-black shadow-lg">
             <Smartphone className="w-6 h-6" />
           </div>
           <div>
             <h3 className="text-base sm:text-lg font-bold text-white">Installer l'application VoxArt</h3>
-            <p className="text-xs text-[#a6adc8]">Application Web Progressive (PWA) autonome & légère</p>
+            <p className="text-xs text-[#a6adc8]">APK Android Natif & Application Web Progressive (PWA)</p>
           </div>
         </div>
 
@@ -154,9 +154,9 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
           <div className="mb-4 p-3 rounded-xl bg-[#fab387]/15 border border-[#fab387]/30 text-xs text-[#f9e2af] flex items-start gap-2.5">
             <Info className="w-4 h-4 text-[#fab387] shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <p className="font-semibold text-white">Vous êtes actuellement dans l'aperçu AI Studio :</p>
+              <p className="font-semibold text-white">Aperçu AI Studio :</p>
               <p className="text-[#cdd6f4]">
-                Les navigateurs bloquent l'installation directe depuis les fenêtres intégrées (iframe). Pour installer VoxArt, ouvrez le lien directement dans votre navigateur mobile (Chrome ou Safari).
+                Les navigateurs bloquent l'installation directe depuis les fenêtres intégrées (iframe). Pour installer l'APK ou la PWA, utilisez les méthodes ci-dessous.
               </p>
             </div>
           </div>
@@ -177,42 +177,113 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
         </div>
 
         {/* Platform Tabs */}
-        <div className="flex rounded-xl bg-[#181825] p-1 mb-4 border border-[#313244]">
+        <div className="grid grid-cols-4 gap-1 rounded-xl bg-[#181825] p-1 mb-4 border border-[#313244] text-[11px]">
+          <button
+            onClick={() => setSelectedTab('apk')}
+            className={`py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
+              selectedTab === 'apk' ? 'bg-amber-500 text-black shadow-sm' : 'text-[#a6adc8] hover:text-white'
+            }`}
+          >
+            <Download className="w-3 h-3" />
+            <span>APK Android</span>
+          </button>
           <button
             onClick={() => setSelectedTab('android')}
-            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            className={`py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
               selectedTab === 'android' ? 'bg-[#89b4fa] text-[#11111b] shadow-sm' : 'text-[#a6adc8] hover:text-white'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>Android</span>
+            <Smartphone className="w-3 h-3" />
+            <span>Chrome PWA</span>
           </button>
           <button
             onClick={() => setSelectedTab('ios')}
-            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            className={`py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
               selectedTab === 'ios' ? 'bg-[#cba6f7] text-[#11111b] shadow-sm' : 'text-[#a6adc8] hover:text-white'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>iPhone / iPad</span>
+            <span>iPhone</span>
           </button>
           <button
             onClick={() => setSelectedTab('desktop')}
-            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            className={`py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
               selectedTab === 'desktop' ? 'bg-[#a6e3a1] text-[#11111b] shadow-sm' : 'text-[#a6adc8] hover:text-white'
             }`}
           >
-            <Monitor className="w-3.5 h-3.5" />
-            <span>PC / Mac</span>
+            <span>PC/Mac</span>
           </button>
         </div>
 
-        {/* Tab 1: Android */}
+        {/* Tab 0: APK Android */}
+        {selectedTab === 'apk' && (
+          <div className="space-y-3.5 text-xs bg-[#181825]/80 p-4 rounded-2xl border border-amber-500/30">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-sm">
+                <Download className="w-4 h-4" />
+                <span>Application Native Android (.apk)</span>
+              </div>
+              <span className="text-[10px] bg-amber-500/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full border border-amber-500/30">
+                100% Autonome
+              </span>
+            </div>
+
+            <p className="text-[#a6adc8] text-[11px] leading-relaxed">
+              Le code source natif Android complet est généré dans le dossier <code className="text-amber-300 bg-[#313244] px-1 py-0.5 rounded">/android</code> avec WebView accéléré, WebRTC et permissions micro.
+            </p>
+
+            <div className="space-y-2.5">
+              <div className="p-3 rounded-xl bg-[#1e1e2e] border border-[#313244] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    Méthode 1 : Compilation auto via GitHub Actions
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#cdd6f4] leading-relaxed">
+                  Le workflow CI/CD <code className="text-[#89b4fa]">.github/workflows/build-apk.yml</code> compile automatiquement votre APK sur les serveurs cloud de GitHub avec le SDK Android officiel.
+                </p>
+                <div className="pt-1 flex flex-wrap gap-2">
+                  <a
+                    href="https://github.com/rasbaytifire-dotcom/voxart-studio/actions"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-black font-bold text-xs shadow-md flex items-center justify-center gap-1.5 transition-all text-center"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Télécharger l'APK sur GitHub Actions</span>
+                    <ExternalLink className="w-3 h-3 ml-1" />
+                  </a>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-[#1e1e2e] border border-[#313244] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white flex items-center gap-1.5">
+                    <Smartphone className="w-3.5 h-3.5 text-[#89b4fa]" />
+                    Méthode 2 : Création immédiate sur smartphone (Hermit)
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#cdd6f4] leading-relaxed">
+                  Installez l'application gratuite <strong>Hermit (Lite Apps Browser)</strong> sur Google Play Store, touchez <strong>(+) Créer</strong> et collez le lien de l'application : l'APK indépendant sera créé instantanément sur votre écran d'accueil sans passer par Chrome !
+                </p>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#89b4fa] text-[11px] space-y-1">
+              <span className="font-bold">📱 Comment installer le fichier .apk téléchargé :</span>
+              <p className="text-[#cdd6f4]">
+                Une fois le fichier <strong className="text-white">VoxArt-Studio.apk</strong> téléchargé, ouvrez-le. Si Android demande l'autorisation d'installer des applications depuis cette source (ex: Chrome ou Gestionnaire de fichiers), activez l'interrupteur et validez l'installation.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 1: Android PWA */}
         {selectedTab === 'android' && (
           <div className="space-y-3 text-xs bg-[#181825]/60 p-4 rounded-2xl border border-[#313244]">
             <div className="flex items-center gap-2 text-[#89b4fa] font-bold text-sm">
               <Smartphone className="w-4 h-4" />
-              <span>Installation sur Android (Google Chrome / Samsung Internet)</span>
+              <span>Installation PWA sur Android (Google Chrome)</span>
             </div>
             
             <ol className="space-y-2.5 text-[#cdd6f4] list-decimal list-inside pl-1 leading-relaxed">
@@ -223,16 +294,20 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
                 Appuyez sur les trois points verticaux <strong className="text-[#89b4fa] inline-flex items-center gap-1"><MoreVertical className="w-3.5 h-3.5 inline" /> Menu</strong> en haut à droite du navigateur.
               </li>
               <li>
-                Appuyez sur <strong className="text-[#a6e3a1]">« Installer l'application »</strong> (ou « Ajouter à l'écran d'accueil »).
+                Appuyez sur <strong className="text-[#a6e3a1]">« Ajouter à l'écran d'accueil »</strong> ou <strong className="text-[#a6e3a1]">« Installer l'application »</strong>.
               </li>
               <li>
-                Confirmez en touchant <strong className="text-[#a6e3a1]">« Installer »</strong>. L'icône de VoxArt sera instantanément créée sur votre écran d'accueil !
+                Sur le panneau Android : touchez <strong className="text-[#a6e3a1]">« Créer un raccourci »</strong>. L'icône VoxArt apparaît immédiatement sur votre bureau !
               </li>
             </ol>
 
-            <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#89b4fa] text-[11px] flex items-center gap-2">
-              <Sparkles className="w-4 h-4 shrink-0" />
-              <span>VoxArt fonctionne sans téléchargement d'APK lourd et prend moins de 2 Mo sur votre mémoire.</span>
+            <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] space-y-1">
+              <div className="font-bold flex items-center gap-1 text-amber-300">
+                <span>💡 Pourquoi « Impossible d'installer cette appli » apparaissait :</span>
+              </div>
+              <p>
+                Sur certains modèles Android, Chrome tente de contacter les serveurs de minting WebAPK de Google, qui sont bloqués par les redirections de session. Choisir <strong>« Créer un raccourci »</strong> ou télécharger le <strong>fichier APK natif</strong> (onglet APK) contourne définitivement ce blocage.
+              </p>
             </div>
           </div>
         )}

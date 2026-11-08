@@ -902,22 +902,55 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
               </div>
             )}
 
-            {/* Live Subtitles Overlay on top of the video */}
-            {showSubtitlesOverlay && activeSegment && (
-              <div className="absolute bottom-6 left-3 right-3 flex justify-center pointer-events-none transition-all duration-150 z-20">
-                <div 
-                  className={`px-4 py-2 rounded-xl text-center max-w-[90%] font-black text-sm sm:text-base leading-snug shadow-2xl drop-shadow-md backdrop-blur-md border ${
-                    subtitleStyle === 'yellow' 
-                      ? 'bg-black/85 text-[#f9e2af] border-yellow-500/40 tracking-wide' 
-                      : subtitleStyle === 'afro'
-                      ? 'bg-[#1c0f04]/90 text-[#fbbf24] border-amber-600/50 tracking-wide'
-                      : 'bg-black/85 text-white border-white/30'
-                  }`}
-                >
-                  {activeSegment.text}
+            {/* Live Subtitles Overlay with Karaoké Word-Level Highlight */}
+            {showSubtitlesOverlay && activeSegment && (() => {
+              const segDur = Math.max(0.1, activeSegment.end - activeSegment.start);
+              const progress = Math.max(0, Math.min(1, (currentTime - activeSegment.start) / segDur));
+              const words = activeSegment.text.trim().split(/\s+/);
+              const currentWordIndex = Math.min(words.length - 1, Math.floor(progress * words.length));
+
+              return (
+                <div className="absolute bottom-6 left-3 right-3 flex justify-center pointer-events-none transition-all duration-150 z-20">
+                  <div 
+                    className={`px-4 py-2.5 rounded-2xl text-center max-w-[92%] font-black text-sm sm:text-base leading-relaxed shadow-2xl drop-shadow-md backdrop-blur-md border flex flex-wrap justify-center gap-1.5 ${
+                      subtitleStyle === 'yellow' 
+                        ? 'bg-black/90 border-yellow-500/40 tracking-wide' 
+                        : subtitleStyle === 'afro'
+                        ? 'bg-[#1c0f04]/90 border-amber-600/50 tracking-wide'
+                        : 'bg-black/90 border-white/30'
+                    }`}
+                  >
+                    {words.map((word, wIdx) => {
+                      const isCurrent = wIdx === currentWordIndex;
+                      const isPast = wIdx < currentWordIndex;
+
+                      return (
+                        <span
+                          key={wIdx}
+                          className={`transition-all duration-150 inline-block ${
+                            isCurrent
+                              ? subtitleStyle === 'afro'
+                                ? 'text-[#f59e0b] scale-110 drop-shadow-[0_0_10px_rgba(245,158,11,0.9)] font-black'
+                                : subtitleStyle === 'yellow'
+                                ? 'text-[#fbbf24] scale-110 drop-shadow-[0_0_10px_rgba(251,191,36,0.9)] font-black'
+                                : 'text-[#38bdf8] scale-110 drop-shadow-[0_0_10px_rgba(56,189,248,0.9)] font-black'
+                              : isPast
+                              ? subtitleStyle === 'yellow'
+                                ? 'text-[#f9e2af]'
+                                : subtitleStyle === 'afro'
+                                ? 'text-[#fbbf24]'
+                                : 'text-white'
+                              : 'text-white/50'
+                          }`}
+                        >
+                          {word}
+                        </span>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Player controls bar */}

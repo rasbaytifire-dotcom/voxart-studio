@@ -26,12 +26,36 @@ if (typeof window !== 'undefined' && typeof HTMLMediaElement !== 'undefined') {
   }
 }
 
-// Register PWA service worker with graceful fallback
+// Register PWA service worker with automatic update detection
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js', { scope: '/' })
       .then((reg) => {
         console.log('PWA ServiceWorker registered successfully:', reg.scope);
+
+        // Force check for updates on startup
+        reg.update().catch(() => {});
+
+        // Listen for new updates
+        reg.onupdatefound = () => {
+          const installingWorker = reg.installing;
+          if (installingWorker) {
+            installingWorker.onstatechange = () => {
+              if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('Nouvelle version de VoxArt disponible !');
+                // Auto reload if user is on installed PWA
+                window.location.reload();
+              }
+            };
+          }
+        };
+
+        // Re-check for updates whenever the user re-opens the app or switches tabs
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') {
+            reg.update().catch(() => {});
+          }
+        });
       })
       .catch((err) => {
         console.warn('PWA ServiceWorker registration fallback:', err);

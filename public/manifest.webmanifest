@@ -1,11 +1,12 @@
 {
   "id": "/",
-  "name": "VoxArt — Studio RidiaLArt-Vision",
+  "name": "VoxArt Studio",
   "short_name": "VoxArt",
   "description": "Studio professionnel de synthèse vocale par IA text-to-speech propulsé par Google Gemini avec gestion de scripts, rythmes africains et projets.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "portrait-primary",
   "background_color": "#181825",
   "theme_color": "#1e1e2e",
@@ -28,6 +29,15 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Studio Vocal",
+      "short_name": "Vocal",
+      "description": "Synthèse vocale et voix off",
+      "url": "/",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
     }
   ]
 }

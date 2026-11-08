@@ -13,6 +13,7 @@ import {
 import JSZip from 'jszip';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { useAppUpdate, TopBarUpdateButton, UpdateSettingsSection } from './components/UpdateManager';
 import { ThemeModeSelector, StudioThemeMode } from './components/ThemeModeSelector';
 import { PlasticSynesthesiaCanvas } from './components/PlasticSynesthesiaCanvas';
 import { PolyrhythmicEngine } from './components/PolyrhythmicEngine';
@@ -23,6 +24,8 @@ import studioLogo from './assets/images/voxart_logo_1791875178885.jpg';
 import { db, ensureAuth } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { audioBufferToWavBlob } from './utils/audioExport';
+import { createBroadcastEQChain } from './utils/audioDuckingEngine';
+import { saveAudioBlob, saveProjectOffline, getAllProjectsOffline } from './utils/indexedDBStorage';
 import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
 import { UnifiedStudioWorkspace } from './components/UnifiedStudioWorkspace';
 import { LibraryManager } from './components/LibraryManager';
@@ -596,6 +599,8 @@ export default function App() {
     }, 4000);
   };
 
+  const appUpdate = useAppUpdate((msg, type) => showToast(msg, type || 'info'));
+
   // Safe Dialog Modal System (replaces window.prompt & window.confirm for iframe compliance)
   interface DialogConfig {
     isOpen: boolean;
@@ -892,7 +897,16 @@ export default function App() {
 
   useEffect(() => {
     const loadedLib = JSON.parse(localStorage.getItem('voxart_library') || '{}');
-    setLibrary(loadedLib);
+    if (loadedLib && Object.keys(loadedLib).length > 0) {
+      setLibrary(loadedLib);
+    } else {
+      getAllProjectsOffline().then(offlineProjects => {
+        const main = offlineProjects.find(p => p.id === 'main_library');
+        if (main && main.library && Object.keys(main.library).length > 0) {
+          setLibrary(main.library);
+        }
+      }).catch(() => {});
+    }
 
     // Sync from Firebase Cloud Firestore
     ensureAuth().then(async () => {
@@ -941,6 +955,9 @@ export default function App() {
       console.warn("Storage quota exceeded:", e);
       showToast("Stockage local saturé. Sauvegarde cloud Firebase active.", "info");
     }
+
+    // High-capacity offline persistence via IndexedDB
+    saveProjectOffline({ id: 'main_library', library: lib }).catch(() => {});
 
     // Sync to Firebase Cloud Firestore
     try {
@@ -1289,7 +1306,7 @@ export default function App() {
 
     const offlineCtx = new OfflineAudioContext(2, frameCount, sampleRate);
 
-    // 1. Voice setup with subtle anti-click micro-fades
+    // 1. Voice setup with Broadcast Vocal EQ & subtle anti-click micro-fades
     const voiceSource = offlineCtx.createBufferSource();
     voiceSource.buffer = decodedVoice;
     voiceSource.playbackRate.value = effectivePitch;
@@ -1307,30 +1324,38 @@ export default function App() {
       voiceGain.gain.setValueAtTime(voiceVol, 0);
     }
 
+    const eq = createBroadcastEQChain(offlineCtx);
     voiceSource.connect(voiceGain);
-    voiceGain.connect(offlineCtx.destination);
+    voiceGain.connect(eq.input);
+    eq.output.connect(offlineCtx.destination);
     voiceSource.start(0);
 
-    // 2. Backing track setup with automated Crossfade
+    // 2. Backing track setup with Automated Crossfade & Sidechain Ducking
     const backingSource = offlineCtx.createBufferSource();
     backingSource.buffer = decodedBacking;
     backingSource.loop = true;
     const backingGain = offlineCtx.createGain();
 
+    // Professional ducking level: sitting -12dB under speech for maximum voice intelligibility
+    const duckedVol = backingVol * 0.28;
+
     if (useCrossfade) {
-      // Intro Crossfade: gentle fade-in ramp up to backingVol
+      // Intro Crossfade: gentle fade-in ramp up to ducked speech volume
       const introFade = Math.min(safeFadeDuration * 0.8, 1.2);
       backingGain.gain.setValueAtTime(0, 0);
-      backingGain.gain.linearRampToValueAtTime(backingVol, introFade);
+      backingGain.gain.linearRampToValueAtTime(duckedVol, introFade);
 
-      // Sustain backingVol during the speech
-      backingGain.gain.setValueAtTime(backingVol, adjustedVoiceDuration);
+      // Sustain ducked volume during speech, then swell up to full backing volume at voice end
+      const voiceEndBeforeTail = Math.max(introFade, adjustedVoiceDuration - 0.25);
+      backingGain.gain.setValueAtTime(duckedVol, voiceEndBeforeTail);
+      backingGain.gain.linearRampToValueAtTime(backingVol, adjustedVoiceDuration);
 
       // Outro Crossfade: smooth decay to 0 over the tailDuration after speech ends
       backingGain.gain.linearRampToValueAtTime(0, totalDuration);
     } else {
-      backingGain.gain.setValueAtTime(backingVol, 0);
-      backingGain.gain.setValueAtTime(backingVol, adjustedVoiceDuration);
+      backingGain.gain.setValueAtTime(duckedVol, 0);
+      backingGain.gain.setValueAtTime(duckedVol, Math.max(0, adjustedVoiceDuration - 0.25));
+      backingGain.gain.linearRampToValueAtTime(backingVol, adjustedVoiceDuration);
       backingGain.gain.linearRampToValueAtTime(0, totalDuration);
     }
 
@@ -1526,9 +1551,70 @@ export default function App() {
       a.remove();
       URL.revokeObjectURL(url);
       showToast(`Audio téléchargé avec succès en .${format} !`, "success");
+
+      // Save blob into offline IndexedDB storage in background
+      saveAudioBlob(`audio_${Date.now()}_${fileName}`, blob, { title: fileName, format }).catch(() => {});
     } catch (e) {
       console.error("Download error:", e);
       showToast("Erreur lors du téléchargement de l'audio.", "error");
+    }
+  };
+
+  const handleDownloadStudioPackZip = async () => {
+    try {
+      showToast("Génération du Pack Studio Multipiste...", "info");
+      const zip = new JSZip();
+      const fileName = (saveTitle.trim() || 'VoxArt_Studio_Pack').replace(/[^a-z0-9_-]/gi, '_');
+      const folder = zip.folder(fileName) || zip;
+
+      // 1. Voice Blob
+      const voiceBlob = await getTrimmedAudioBlob();
+      folder.file(`01_Voix_Acapella_${fileName}.wav`, voiceBlob);
+
+      // 2. Mix with Ducking if backing track active
+      if (activeBackingTrack && activeBackingTrack.url) {
+        try {
+          const mixBlob = await renderMixedAudioBlob(
+            voiceBlob,
+            activeBackingTrack.url,
+            voiceVolume,
+            backingVolume,
+            voicePitch,
+            enableCrossfade,
+            crossfadeDuration
+          );
+          folder.file(`02_Mix_Master_Ducked_${fileName}.wav`, mixBlob);
+
+          const backingRes = await fetch(activeBackingTrack.url);
+          if (backingRes.ok) {
+            const backingBlob = await backingRes.blob();
+            folder.file(`03_Fond_Sonore_Isole_${fileName}.wav`, backingBlob);
+          }
+        } catch (e) {
+          console.warn("Could not generate mix for zip pack:", e);
+        }
+      }
+
+      // 3. Subtitles SRT & Script
+      if (text) {
+        folder.file(`04_Script_${fileName}.txt`, text);
+        const srtContent = generateSRT(text);
+        folder.file(`05_Sous_Titres_${fileName}.srt`, srtContent);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${fileName}_Multipiste_Studio.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("📦 Pack Studio Multipiste ZIP téléchargé avec succès !", "success");
+    } catch (e) {
+      console.error("Studio Pack ZIP Export error:", e);
+      showToast("Erreur lors de la génération du Pack Studio Multipiste.", "error");
     }
   };
 
@@ -2290,6 +2376,12 @@ ${item.text}`;
             {themeMode === 'ridialart' ? <Sparkles className="w-3 h-3 text-[#fbbf24]" /> : <Radio className="w-3 h-3 text-[#89b4fa]" />}
             <span className="hidden sm:inline">{themeMode === 'ridialart' ? 'RidiaLArt' : 'Standard'}</span>
           </button>
+          <TopBarUpdateButton
+            onCheck={() => appUpdate.checkForUpdate(true)}
+            isChecking={appUpdate.isChecking}
+            hasUpdate={appUpdate.hasUpdate}
+            onApplyUpdate={appUpdate.applyUpdate}
+          />
           <PWAInstallButton />
         </div>
       </div>
@@ -3193,6 +3285,16 @@ ${item.text}`;
                           <span>📥 Télécharger (.wav)</span>
                         </button>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={handleDownloadStudioPackZip}
+                        className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-600/30 via-orange-600/30 to-amber-600/30 hover:from-amber-600/40 hover:to-orange-600/40 border border-amber-500/50 text-amber-200 font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer"
+                        title="Télécharge une archive ZIP contenant la voix acapella isolée, le fond sonore, le master ducké et les sous-titres SRT"
+                      >
+                        <Package className="w-4 h-4 text-[#fbbf24]" />
+                        <span>📦 Télécharger Pack Studio Multipiste (Voix + Fond + Mix + SRT)</span>
+                      </button>
 
                       <div className="pt-2 border-t border-[#45475a]/60 space-y-2">
                         <div className="text-[11px] font-semibold text-[#a6adc8] flex items-center gap-1">
@@ -4271,6 +4373,17 @@ ${item.text}`;
             >
               ⬅️ Retour à l'accueil
             </button>
+
+            {/* Mises à jour PWA & Statut Version */}
+            <UpdateSettingsSection
+              isChecking={appUpdate.isChecking}
+              hasUpdate={appUpdate.hasUpdate}
+              lastChecked={appUpdate.lastChecked}
+              serverVersion={appUpdate.serverVersion}
+              message={appUpdate.message}
+              onCheck={() => appUpdate.checkForUpdate(true)}
+              onApply={appUpdate.applyUpdate}
+            />
 
             {/* Thématique & Mode du Studio */}
             <div className="space-y-2 pt-2">

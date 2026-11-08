@@ -104,6 +104,19 @@ async function startServer() {
     });
   });
 
+  // App version and live update verification endpoint
+  const APP_VERSION = "2.4.2";
+  const APP_RELEASE_TIME = Date.now();
+  app.get("/api/version", (_req, res) => {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.json({
+      version: APP_VERSION,
+      releaseTime: APP_RELEASE_TIME,
+      name: "VoxArt Studio",
+      timestamp: Date.now()
+    });
+  });
+
 function cleanTextForSpeech(text: string): string {
   if (!text || typeof text !== 'string') return '';
   return text
@@ -881,19 +894,21 @@ RÈGLES SRT STRICTES :
 
   // Explicit PWA endpoints to ensure exact MIME types and instant installability
   app.get("/manifest.json", (_req, res) => {
-
     res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.sendFile(path.resolve(__dirname, "public/manifest.json"));
   });
 
   app.get("/manifest.webmanifest", (_req, res) => {
     res.setHeader("Content-Type", "application/manifest+json");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.sendFile(path.resolve(__dirname, "public/manifest.webmanifest"));
   });
 
   app.get("/sw.js", (_req, res) => {
     res.setHeader("Content-Type", "application/javascript");
     res.setHeader("Service-Worker-Allowed", "/");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.sendFile(path.resolve(__dirname, "public/sw.js"));
   });
 
