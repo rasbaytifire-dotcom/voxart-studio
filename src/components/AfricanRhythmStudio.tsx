@@ -34,8 +34,154 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
   existingProjects = ['Mon Projet 1'],
   initialComposition
 }) => {
-  // Studio navigation tabs: 'music' (sequencer), 'effects' (DSP), 'export' (WAV & library)
-  const [activeTab, setActiveTab] = useState<'music' | 'effects' | 'export'>('music');
+  // Studio navigation tabs: 'music' (sequencer), 'effects' (DSP), 'soundboard' (natural sounds), 'export' (WAV & library)
+  const [activeTab, setActiveTab] = useState<'music' | 'effects' | 'soundboard' | 'export'>('music');
+  const [activeSoundId, setActiveSoundId] = useState<string | null>(null);
+
+  const playNaturalSound = (id: string) => {
+    try {
+      const ctx = getAudioContext();
+      const now = ctx.currentTime;
+      setActiveSoundId(id);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.4, now);
+      if (masterRackRef.current) {
+        gain.connect(masterRackRef.current.input);
+      } else {
+        gain.connect(ctx.destination);
+      }
+
+      if (id === 'forest') {
+        const bufferSize = ctx.sampleRate * 3;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * 0.5;
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(400, now);
+        filter.Q.setValueAtTime(3.0, now);
+        filter.frequency.exponentialRampToValueAtTime(1200, now + 1.5);
+        filter.frequency.exponentialRampToValueAtTime(300, now + 3.0);
+
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.35, now + 0.5);
+        gain.gain.linearRampToValueAtTime(0, now + 3.0);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        noise.start(now);
+        noise.stop(now + 3.0);
+        window.setTimeout(() => setActiveSoundId(null), 3000);
+      } else if (id === 'market') {
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(150, now);
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(800, now);
+
+        gain.gain.setValueAtTime(0, now);
+        for (let t = 0; t < 2.5; t += 0.2) {
+          gain.gain.setValueAtTime(0.2, now + t);
+          gain.gain.setValueAtTime(0.05, now + t + 0.1);
+          osc.frequency.setValueAtTime(120 + Math.random() * 250, now + t);
+        }
+        gain.gain.linearRampToValueAtTime(0, now + 3.0);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        osc.start(now);
+        osc.stop(now + 3.0);
+        window.setTimeout(() => setActiveSoundId(null), 3000);
+      } else if (id === 'village') {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        osc1.type = 'sine';
+        osc2.type = 'triangle';
+        osc1.frequency.setValueAtTime(110, now);
+        osc2.frequency.setValueAtTime(220, now);
+
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.3, now + 0.5);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 3.5);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 3.5);
+        osc2.stop(now + 3.5);
+        window.setTimeout(() => setActiveSoundId(null), 3500);
+      } else if (id === 'rooster') {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(500, now);
+        osc.frequency.linearRampToValueAtTime(1100, now + 0.3);
+        osc.frequency.setValueAtTime(900, now + 0.35);
+        osc.frequency.linearRampToValueAtTime(1200, now + 0.7);
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(1000, now);
+        filter.Q.setValueAtTime(5, now);
+
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.5, now + 0.1);
+        gain.gain.setValueAtTime(0.4, now + 0.6);
+        gain.gain.linearRampToValueAtTime(0, now + 1.2);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        osc.start(now);
+        osc.stop(now + 1.2);
+        window.setTimeout(() => setActiveSoundId(null), 1200);
+      } else if (id === 'birds') {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.25, now);
+        
+        for (let i = 0; i < 5; i++) {
+          const t = now + i * 0.2;
+          osc.frequency.setValueAtTime(2500 + Math.random() * 800, t);
+          osc.frequency.exponentialRampToValueAtTime(3500 + Math.random() * 1000, t + 0.15);
+        }
+        gain.gain.linearRampToValueAtTime(0, now + 1.5);
+
+        osc.connect(gain);
+        osc.start(now);
+        osc.stop(now + 1.5);
+        window.setTimeout(() => setActiveSoundId(null), 1500);
+      } else if (id === 'lion') {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(140, now);
+        osc.frequency.exponentialRampToValueAtTime(55, now + 2.0);
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(450, now);
+        filter.frequency.linearRampToValueAtTime(180, now + 2.0);
+
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.45, now + 0.3);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        osc.start(now);
+        osc.stop(now + 2.5);
+        window.setTimeout(() => setActiveSoundId(null), 2500);
+      }
+    } catch (e) {
+      console.warn("Soundboard play error:", e);
+      setActiveSoundId(null);
+    }
+  };
 
   // Current active composition
   const [composition, setComposition] = useState<RhythmComposition>(() => {
@@ -595,6 +741,17 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
             <span>2. Effets & DSP</span>
           </button>
           <button
+            onClick={() => setActiveTab('soundboard')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+              activeTab === 'soundboard'
+                ? 'bg-gradient-to-r from-[#d97706] to-[#f59e0b] text-[#1c0f04] shadow-md'
+                : 'text-[#fde68a]/70 hover:text-[#fde68a]'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5" />
+            <span>3. Soundboard Nature</span>
+          </button>
+          <button
             onClick={() => setActiveTab('export')}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
               activeTab === 'export'
@@ -603,7 +760,7 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
             }`}
           >
             <Download className="w-3.5 h-3.5" />
-            <span>3. Export & Biblio</span>
+            <span>4. Export & Biblio</span>
           </button>
         </div>
       </div>
@@ -1245,7 +1402,59 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
         </div>
       )}
 
-      {/* SECTION 3: EXPORT MASTER WAV & BIBLIOTHÈQUE */}
+      {/* SECTION 3: SOUNDBOARD NATURE & AMBIANCE ENDOGÈNE */}
+      {activeTab === 'soundboard' && (
+        <div className="bg-[#241307]/90 p-5 rounded-3xl border border-[#fbbf24]/30 shadow-2xl space-y-5 animate-fadeIn">
+          <div className="flex items-center justify-between border-b border-[#fbbf24]/20 pb-3">
+            <div>
+              <h3 className="text-base font-black text-[#fbbf24] flex items-center gap-2">
+                <Radio className="w-5 h-5 text-[#f59e0b]" />
+                <span>Soundboard Nature & Ambiance Endogène</span>
+              </h3>
+              <p className="text-xs text-[#fde68a]/70 mt-0.5">
+                Déclenchez instantanément des bruitages naturels et atmosphériques pour enrichir vos compositions, contes ou productions orales.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[
+              { id: 'forest', title: 'Forêt', icon: '🌲', desc: 'Vent et murmure de la canopée', color: 'from-emerald-900/80 to-green-950/80' },
+              { id: 'market', title: 'Marché', icon: '🛒', desc: 'Animation, murmures et effervescence', color: 'from-amber-900/80 to-yellow-950/80' },
+              { id: 'village', title: 'Village', icon: '🛖', desc: 'Chaleur, bois et résonance de vie', color: 'from-orange-900/80 to-amber-950/80' },
+              { id: 'rooster', title: 'Chant de coq', icon: '🐓', desc: 'Cocorico traditionnel matinal', color: 'from-red-900/80 to-orange-950/80' },
+              { id: 'birds', title: 'Oiseaux', icon: '🐦', desc: 'Trills et chants d’oiseaux tropicaux', color: 'from-sky-900/80 to-blue-950/80' },
+              { id: 'lion', title: 'Lion', icon: '🦁', desc: 'Rugissement puissant de la savane', color: 'from-yellow-900/80 to-amber-950/80' }
+            ].map((sound) => {
+              const isActive = activeSoundId === sound.id;
+              return (
+                <button
+                  key={sound.id}
+                  onClick={() => playNaturalSound(sound.id)}
+                  className={`p-4 rounded-2xl bg-gradient-to-br ${sound.color} border text-left transition-all flex flex-col justify-between gap-3 shadow-xl hover:scale-[1.02] ${
+                    isActive ? 'border-[#fbbf24] ring-2 ring-[#fbbf24] scale-[1.02] brightness-125' : 'border-[#fbbf24]/30 hover:border-[#fbbf24]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-3xl">{sound.icon}</span>
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      isActive ? 'bg-[#fbbf24] text-[#1c0f04] animate-pulse' : 'bg-[#140c06]/60 text-[#fde68a]'
+                    }`}>
+                      {isActive ? 'Lecture...' : 'Déclencher'}
+                    </span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-[#fef3c7]">{sound.title}</h4>
+                    <p className="text-[11px] text-[#fde68a]/70 mt-0.5 leading-relaxed">{sound.desc}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 4: EXPORT MASTER WAV & BIBLIOTHÈQUE */}
       {activeTab === 'export' && (
         <div className="space-y-4 animate-fadeIn">
           {saveSuccessMsg && (

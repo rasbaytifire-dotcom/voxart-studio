@@ -8,7 +8,7 @@ import {
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
   Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
-  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc
+  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -20,6 +20,48 @@ import { AfricanRhythmStudio } from './components/AfricanRhythmStudio';
 import { AIAgentChat } from './components/AIAgentChat';
 import { RhythmComposition } from './types/rhythm';
 import studioLogo from './assets/images/voxart_logo_1791875178885.jpg';
+import { db, ensureAuth } from './firebase';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { audioBufferToWavBlob } from './utils/audioExport';
+import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
+import { UnifiedStudioWorkspace } from './components/UnifiedStudioWorkspace';
+import { LibraryManager } from './components/LibraryManager';
+import { BackgroundMusicStudio, BackingTrackInfo } from './components/BackgroundMusicStudio';
+import { TranscriptionStudio } from './components/TranscriptionStudio';
+import { 
+  TRADITIONAL_RHYTHM_PRESETS, 
+  DEFAULT_SOUNDSCAPES, 
+  renderCompositionToWav, 
+  playContinuousSoundscape 
+} from './utils/africanAudioEngine';
+import { cleanTextForSpeech } from './utils/textCleaner';
+import { copyTextToClipboard } from './utils/clipboard';
+import { useApiAuth, authFetch, apiAuthStore } from './services/apiAuth';
+
+interface SynthesisPresetConfig {
+  domain: string;
+  language: string;
+  style: string;
+  gender: string;
+  voiceName: string;
+  voicePitch: number;
+  voiceVolume: number;
+  backingVolume: number;
+  enableCrossfade?: boolean;
+  crossfadeDuration?: number;
+  model: string;
+  defaultBackingTrackId?: string;
+  savedAt?: string;
+}
+
+const getStoredDefaultPreset = (): SynthesisPresetConfig | null => {
+  try {
+    const raw = localStorage.getItem('voxart_default_preset');
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+};
 
 interface SavedAudioItem {
   id: number;
@@ -33,9 +75,20 @@ interface SavedTextItem {
   content: string;
 }
 
+interface SavedVideoItem {
+  id: number;
+  name: string;
+  data: string;
+}
+
 interface ProjectData {
   audios: SavedAudioItem[];
   texts: SavedTextItem[];
+  videos?: SavedVideoItem[];
+  category?: string;
+  folderPath?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface BatchQueueItem {
@@ -140,9 +193,9 @@ function formatSRTTime(seconds: number): string {
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'rhythm_studio' | 'library' | 'settings'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings'>('home');
   const [studioComposition, setStudioComposition] = useState<RhythmComposition | undefined>(undefined);
-  const [activeBackingTrack, setActiveBackingTrack] = useState<{ url: string; title: string } | null>(null);
+  const [activeBackingTrack, setActiveBackingTrack] = useState<BackingTrackInfo | null>(null);
   const [isBackingTrackPlaying, setIsBackingTrackPlaying] = useState<boolean>(false);
   const backingAudioRef = useRef<HTMLAudioElement | null>(null);
   
@@ -170,22 +223,80 @@ export default function App() {
     }
   };
 
-  // Settings State
-  const [domain, setDomain] = useState('art');
-  const [language, setLanguage] = useState('Français');
-  const [style, setStyle] = useState(stylesMap.art[0].val);
-  const [gender, setGender] = useState('voix masculine grave, profonde et résonnante (homme)');
-  const [voiceName, setVoiceName] = useState('Kore');
-  const [model, setModel] = useState('gemini-3.8-flash-lite-tts');
-  const [apiKey, setApiKey] = useState(localStorage.getItem('voxart_key') || '');
+  // Default synthesis preset management
+  const initialPresetRef = useRef<SynthesisPresetConfig | null>(getStoredDefaultPreset());
+  const [hasCustomDefaultPreset, setHasCustomDefaultPreset] = useState<boolean>(() => !!getStoredDefaultPreset());
+  const [defaultPresetInfo, setDefaultPresetInfo] = useState<string | null>(() => getStoredDefaultPreset()?.savedAt || null);
 
-  // Home State
-  const [text, setText] = useState('');
+  // Settings State - loaded from saved default preset or factory defaults
+  const [domain, setDomain] = useState(() => initialPresetRef.current?.domain || 'art');
+  const [language, setLanguage] = useState(() => initialPresetRef.current?.language || 'Français');
+  const [style, setStyle] = useState(() => initialPresetRef.current?.style || (stylesMap[initialPresetRef.current?.domain || 'art'] || stylesMap.art)[0].val);
+  const [gender, setGender] = useState(() => initialPresetRef.current?.gender || 'voix masculine grave, profonde et résonnante (homme)');
+  const [voiceName, setVoiceName] = useState(() => initialPresetRef.current?.voiceName || 'Kore');
+  const [model, setModel] = useState(() => initialPresetRef.current?.model || 'gemini-3.8-flash-lite-tts');
+  const { apiKey, setApiKey, isValidKey, backendStatus } = useApiAuth();
+  const [isLiveMixPlaying, setIsLiveMixPlaying] = useState<boolean>(false);
+
+  // Home State & 30s Auto-save
+  const [text, setText] = useState<string>(() => {
+    return localStorage.getItem('voxart_autosave_text') || '';
+  });
+  const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(() => {
+    return localStorage.getItem('voxart_autosave_time') || null;
+  });
+  const [showMixer, setShowMixer] = useState<boolean>(false);
   const [saveTitle, setSaveTitle] = useState('Piste_01');
   const [library, setLibrary] = useState<Record<string, ProjectData>>({});
   const [selectedProject, setSelectedProject] = useState<string>('');
   const [newProjectName, setNewProjectName] = useState('');
   const [libNewProjectName, setLibNewProjectName] = useState('');
+
+  // Initialisation et proposition clé API si non encore configurée
+  useEffect(() => {
+    const currentKey = apiAuthStore.getKey();
+    if (!currentKey && !backendStatus.hasServerEnvKey) {
+      setDialog({
+        isOpen: true,
+        title: "Configuration de la Clé API Gemini",
+        message: "Pour accéder aux fonctionnalités avancées d'analyse et d'agent vocal, veuillez saisir votre clé API Gemini (gratuite sur aistudio.google.com).",
+        type: 'prompt',
+        confirmText: "Enregistrer",
+        onConfirm: (val) => {
+          if (val && typeof val === 'string' && val.trim()) {
+            const cleanKey = val.trim();
+            setApiKey(cleanKey);
+            showToast("✓ Clé API enregistrée et synchronisée !", "success");
+          }
+        }
+      });
+    }
+  }, [backendStatus.hasServerEnvKey]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (text) {
+        localStorage.setItem('voxart_autosave_text', text);
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        localStorage.setItem('voxart_autosave_time', timeStr);
+        setLastAutoSaveTime(timeStr);
+      }
+    }, 30000);
+
+    return () => clearInterval(timer);
+  }, [text]);
+
+  // Sauvegarde préventive de sécurité avant déchargement de page
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (text) {
+        localStorage.setItem('voxart_autosave_text', text);
+        localStorage.setItem('voxart_autosave_time', new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [text]);
   
   // Audio & Trimmer State
   const [currentAudioBlob, setCurrentAudioBlob] = useState<Blob | null>(null);
@@ -194,6 +305,118 @@ export default function App() {
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const [startTime, setStartTime] = useState<number>(0);
   const [endTime, setEndTime] = useState<number>(0);
+  const [fadeInDuration, setFadeInDuration] = useState<number>(0.1);
+  const [fadeOutDuration, setFadeOutDuration] = useState<number>(0.2);
+  const [voiceVolume, setVoiceVolume] = useState<number>(() => {
+    const v = initialPresetRef.current?.voiceVolume;
+    return typeof v === 'number' ? Math.max(0, Math.min(1, v)) : 1.0;
+  });
+  const [backingVolume, setBackingVolume] = useState<number>(() => {
+    const v = initialPresetRef.current?.backingVolume;
+    return typeof v === 'number' ? Math.max(0, Math.min(1, v)) : 0.55;
+  });
+  const [voicePitch, setVoicePitch] = useState<number>(() => {
+    const v = initialPresetRef.current?.voicePitch;
+    return typeof v === 'number' ? Math.max(0.7, Math.min(1.3, v)) : 1.0;
+  });
+  const [enableCrossfade, setEnableCrossfade] = useState<boolean>(() => {
+    const v = initialPresetRef.current?.enableCrossfade;
+    return typeof v === 'boolean' ? v : true;
+  });
+  const [crossfadeDuration, setCrossfadeDuration] = useState<number>(() => {
+    const d = initialPresetRef.current?.crossfadeDuration;
+    return typeof d === 'number' ? Math.max(0.3, Math.min(4.0, d)) : 1.5;
+  });
+  const [isMixingFinal, setIsMixingFinal] = useState<boolean>(false);
+
+  // Save current synthesis settings as user default preset for future app launches
+  const handleSaveDefaultPreset = () => {
+    const timeStr = new Date().toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    const preset: SynthesisPresetConfig = {
+      domain,
+      language,
+      style,
+      gender,
+      voiceName,
+      voicePitch,
+      voiceVolume,
+      backingVolume,
+      enableCrossfade,
+      crossfadeDuration,
+      model,
+      defaultBackingTrackId: activeBackingTrack ? activeBackingTrack.title : undefined,
+      savedAt: timeStr
+    };
+    try {
+      localStorage.setItem('voxart_default_preset', JSON.stringify(preset));
+      setHasCustomDefaultPreset(true);
+      setDefaultPresetInfo(timeStr);
+      showToast("💾 Préréglage de synthèse enregistré par défaut à chaque ouverture !", "success");
+    } catch (e) {
+      console.warn("Storage error saving preset:", e);
+      showToast("Erreur lors de la sauvegarde du préréglage local.", "error");
+    }
+  };
+
+  // Restore factory audio synthesis defaults
+  const handleResetDefaultPreset = () => {
+    localStorage.removeItem('voxart_default_preset');
+    setHasCustomDefaultPreset(false);
+    setDefaultPresetInfo(null);
+    setDomain('art');
+    setLanguage('Français');
+    setStyle(stylesMap.art[0].val);
+    setGender('voix masculine grave, profonde et résonnante (homme)');
+    setVoiceName('Kore');
+    setModel('gemini-3.8-flash-lite-tts');
+    setVoicePitch(1.0);
+    setVoiceVolume(1.0);
+    setBackingVolume(0.55);
+    setEnableCrossfade(true);
+    setCrossfadeDuration(1.5);
+    showToast("Paramètres d'usine réinitialisés avec succès.", "info");
+  };
+
+  useEffect(() => {
+    if (audioRef.current) {
+      try {
+        const safeVol = Math.max(0, Math.min(1, voiceVolume));
+        audioRef.current.volume = safeVol;
+      } catch (e) {
+        console.warn("Could not set voice volume:", e);
+      }
+    }
+  }, [voiceVolume]);
+
+  useEffect(() => {
+    if (backingAudioRef.current) {
+      try {
+        const safeVol = Math.max(0, Math.min(1, backingVolume));
+        backingAudioRef.current.volume = safeVol;
+      } catch (e) {
+        console.warn("Could not set backing volume:", e);
+      }
+    }
+  }, [backingVolume]);
+
+  // Real-time pitch control on the generated speech audio element
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = voicePitch;
+      try {
+        (audioRef.current as any).preservesPitch = false;
+        (audioRef.current as any).mozPreservesPitch = false;
+        (audioRef.current as any).webkitPreservesPitch = false;
+      } catch (e) {
+        // ignore
+      }
+    }
+  }, [voicePitch]);
   
   const [isGenerating, setIsGenerating] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -202,14 +425,150 @@ export default function App() {
   const [retryCountdown, setRetryCountdown] = useState<number>(0);
   const [showSaveSection, setShowSaveSection] = useState(false);
   const [copiedScriptId, setCopiedScriptId] = useState<number | string | null>(null);
+  const [activeVideoModal, setActiveVideoModal] = useState<{ url: string; title: string } | null>(null);
+  const [isApplyingQuickBacking, setIsApplyingQuickBacking] = useState<boolean>(false);
+  const backingInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Quick selection and instant generation of background music and soundscapes directly from text editor
+  const handleQuickSelectPreset = async (presetId: string) => {
+    if (presetId === '__NONE__') {
+      if (backingAudioRef.current) backingAudioRef.current.pause();
+      setActiveBackingTrack(null);
+      setIsBackingTrackPlaying(false);
+      showToast("Fond sonore d'accompagnement désactivé.", "info");
+      return;
+    }
+    if (presetId === '__COMPOSE__') {
+      setCurrentView('rhythm_studio');
+      return;
+    }
+    if (presetId === '__STUDIO__') {
+      setShowMixer(true);
+      return;
+    }
+    if (presetId === '__UPLOAD__') {
+      backingInputRef.current?.click();
+      return;
+    }
+
+    setIsApplyingQuickBacking(true);
+    try {
+      // 1. Check traditional African rhythm presets
+      const preset = TRADITIONAL_RHYTHM_PRESETS.find(p => p.id === presetId);
+      if (preset) {
+        showToast(`Génération du rythme "${preset.name}" en cours...`, "info");
+        const wavBlob = await renderCompositionToWav(preset, 4);
+        const url = URL.createObjectURL(wavBlob);
+        setActiveBackingTrack({
+          url,
+          title: `🥁 ${preset.name}`,
+          category: 'Rythme Traditionnel',
+          icon: '🥁'
+        });
+        setIsBackingTrackPlaying(false);
+        showToast(`Fond rythmique "${preset.name}" activé avec succès !`, "success");
+        return;
+      }
+
+      // 2. Check endogenous soundscapes
+      const sc = DEFAULT_SOUNDSCAPES.find(s => s.id === presetId);
+      if (sc) {
+        showToast(`Synthèse de l'ambiance "${sc.name}" en cours...`, "info");
+        const sampleRate = 44100;
+        const duration = 20;
+        const offlineCtx = new OfflineAudioContext(2, sampleRate * duration, sampleRate);
+        const gainNode = offlineCtx.createGain();
+        gainNode.gain.setValueAtTime(0.75, 0);
+        gainNode.connect(offlineCtx.destination);
+        playContinuousSoundscape(offlineCtx, sc.id, 0, duration, 0.7, 0, gainNode);
+        const renderedBuffer = await offlineCtx.startRendering();
+        const wavBlob = audioBufferToWavBlob(renderedBuffer);
+        const url = URL.createObjectURL(wavBlob);
+        setActiveBackingTrack({
+          url,
+          title: `${sc.icon} ${sc.name}`,
+          category: 'Ambiance Naturelle',
+          icon: sc.icon
+        });
+        setIsBackingTrackPlaying(false);
+        showToast(`Ambiance naturelle "${sc.name}" activée !`, "success");
+        return;
+      }
+    } catch (err) {
+      console.error("Error setting quick backing track:", err);
+      showToast("Erreur lors de la génération du fond sonore.", "error");
+    } finally {
+      setIsApplyingQuickBacking(false);
+    }
+  };
+
+  const handleVideoUpload = (proj: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      const updated = { ...library };
+      if (!updated[proj].videos) updated[proj].videos = [];
+      updated[proj].videos.push({
+        id: Date.now(),
+        name: file.name.replace(/\.[^/.]+$/, ""),
+        data: base64
+      });
+      saveLibraryToStorage(updated);
+      showToast(`Vidéo "${file.name}" importée dans le projet "${proj}" !`, "success");
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type.startsWith('audio/')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        setActiveBackingTrack({
+          url: base64,
+          title: file.name.replace(/\.[^/.]+$/, "")
+        });
+        setShowMixer(true);
+        showToast(`Audio "${file.name}" importé comme fond sonore !`, "success");
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = (event.target?.result as string) || '';
+        setText(content);
+        localStorage.setItem('voxart_autosave_text', content);
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        localStorage.setItem('voxart_autosave_time', timeStr);
+        setLastAutoSaveTime(timeStr);
+        showToast(`Fichier texte "${file.name}" importé avec succès !`, "success");
+      };
+      reader.readAsText(file);
+    }
+    e.target.value = '';
+  };
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const testAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const retryTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Batch Processing State
-  const [homeMode, setHomeMode] = useState<'single' | 'batch'>('single');
+  // Preview Mix State (in-memory temporary rendering without disk write)
+  const [isPreviewingMix, setIsPreviewingMix] = useState<boolean>(false);
+  const [previewMixUrl, setPreviewMixUrl] = useState<string | null>(null);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
+
+  // Batch & Workspace State
+  const [homeMode, setHomeMode] = useState<'single' | 'batch' | 'workspace' | 'transcription' | 'video_dubbing'>('single');
+  const [preloadedVideoFile, setPreloadedVideoFile] = useState<File | null>(null);
+  const homeVideoInputRef = useRef<HTMLInputElement | null>(null);
   const [batchRawText, setBatchRawText] = useState('');
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
   const [batchTargetProject, setBatchTargetProject] = useState('Projet_Audiobook_Lots');
@@ -220,6 +579,7 @@ export default function App() {
   const [batchCurrentIndex, setBatchCurrentIndex] = useState<number>(-1);
   const [batchDelayCountdown, setBatchDelayCountdown] = useState<number>(0);
   const [batchSequentialPlayingIndex, setBatchSequentialPlayingIndex] = useState<number | null>(null);
+  const [batchCompressMp3, setBatchCompressMp3] = useState<boolean>(true);
 
   // Toast Notification System
   interface ToastItem {
@@ -404,12 +764,15 @@ export default function App() {
     }
 
     setIsAnalyzingSentiment(true);
+    const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
     try {
-      const res = await fetch('/api/sentiment-analysis', {
+      const res = await authFetch('/api/sentiment-analysis', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: trimmed, apiKey })
-      });
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text: trimmed, apiKey: effectiveKey })
+      }, effectiveKey);
 
       if (!res.ok) {
         throw new Error(`API response status ${res.status}`);
@@ -479,9 +842,74 @@ export default function App() {
     }
   };
 
+  const handleTransferFromAgent = (rawText: string) => {
+    if (!rawText || !rawText.trim()) return;
+
+    // Detect explicit tone tag like [Ton: ...] or [Style: ...]
+    const toneMatch = rawText.match(/\[(?:Ton|Style)\s*:\s*([^\]]+)\]/i);
+    let cleanedText = rawText;
+    let explicitTone: string | null = null;
+
+    if (toneMatch) {
+      explicitTone = toneMatch[1].trim();
+      cleanedText = cleanedText.replace(/\[(?:Ton|Style)\s*:\s*[^\]]+\]/gi, '').trim();
+    }
+
+    // Clean surrounding markdown backticks if present
+    cleanedText = cleanedText.replace(/^```[a-zA-Z0-9_-]*\n?/, '').replace(/```$/, '').trim();
+
+    // Set text in state & localStorage
+    setText(cleanedText);
+    localStorage.setItem('voxart_autosave_text', cleanedText);
+
+    // Switch view directly to Studio Vocal (single mode)
+    setHomeMode('single');
+
+    // Match explicit tone with stylesMap
+    let toneApplied = false;
+    if (explicitTone) {
+      const lower = explicitTone.toLowerCase();
+      for (const [dom, styles] of Object.entries(stylesMap)) {
+        const found = styles.find(s => s.label.toLowerCase().includes(lower) || lower.includes(s.label.toLowerCase()));
+        if (found) {
+          setDomain(dom);
+          setStyle(found.val);
+          toneApplied = true;
+          showToast(`Texte collé dans le Studio Vocal ! Ton sélectionné : "${found.label}"`, "success");
+          break;
+        }
+      }
+    }
+
+    // If no explicit tone was matched, trigger intelligent sentiment & style analysis
+    if (!toneApplied) {
+      runSentimentAnalysis(cleanedText, true);
+      showToast("Texte collé dans le Studio Vocal avec adaptation automatique du ton !", "success");
+    }
+
+    window.scrollTo({ top: 120, behavior: 'smooth' });
+  };
+
   useEffect(() => {
     const loadedLib = JSON.parse(localStorage.getItem('voxart_library') || '{}');
     setLibrary(loadedLib);
+
+    // Sync from Firebase Cloud Firestore
+    ensureAuth().then(async () => {
+      try {
+        const docRef = doc(db, 'vox_library', 'main_library');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const cloudData = docSnap.data().library as Record<string, ProjectData>;
+          if (cloudData && Object.keys(cloudData).length > 0) {
+            setLibrary(cloudData);
+            localStorage.setItem('voxart_library', JSON.stringify(cloudData));
+          }
+        }
+      } catch (e) {
+        console.warn("Cloud sync load error:", e);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -505,13 +933,22 @@ export default function App() {
     showToast("File d'attente automatique interrompue.", "info");
   };
 
-  const saveLibraryToStorage = (lib: Record<string, ProjectData>) => {
+  const saveLibraryToStorage = async (lib: Record<string, ProjectData>) => {
     setLibrary(lib);
     try {
       localStorage.setItem('voxart_library', JSON.stringify(lib));
     } catch (e: any) {
       console.warn("Storage quota exceeded:", e);
-      showToast("Quota de stockage local atteint ! Pensez à exporter vos projets en ZIP ou JSON.", "error");
+      showToast("Stockage local saturé. Sauvegarde cloud Firebase active.", "info");
+    }
+
+    // Sync to Firebase Cloud Firestore
+    try {
+      await ensureAuth();
+      const docRef = doc(db, 'vox_library', 'main_library');
+      await setDoc(docRef, { library: lib, updatedAt: new Date().toISOString() });
+    } catch (e) {
+      console.warn("Cloud sync save error:", e);
     }
   };
 
@@ -521,11 +958,11 @@ export default function App() {
     setStyle(available[0].val);
   };
 
-  const fetchWithExponentialBackoff = async (url: string, options: RequestInit, maxRetries = 3): Promise<Response> => {
+  const fetchWithExponentialBackoff = async (url: string, options: RequestInit, maxRetries = 3, explicitKey?: string): Promise<Response> => {
     let delay = 2000;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await fetch(url, options);
+        const response = await authFetch(url, options, explicitKey);
         if (response.status === 429 && attempt < maxRetries) {
           setStatusMsg(`Quota atteint. Tentative ${attempt}/${maxRetries} dans ${delay / 1000}s (backoff exponentiel)...`);
           setRetryCountdown(Math.floor(delay / 1000));
@@ -540,11 +977,16 @@ export default function App() {
         delay *= 2;
       }
     }
-    return fetch(url, options);
+    return authFetch(url, options, explicitKey);
   };
 
   const generateTTS = async (textToRead: string, isTest = false) => {
-    if (!textToRead.trim()) return;
+    // Sanitize text: strip markdown asterisks (*, **), bullet points, and code formatting so the voice never speaks them
+    const sanitizedText = cleanTextForSpeech(textToRead);
+    if (!sanitizedText.trim()) {
+      showToast("Veuillez saisir un texte à convertir.", "info");
+      return;
+    }
 
     if (isTest) {
       setIsTesting(true);
@@ -555,24 +997,36 @@ export default function App() {
       setRetryCountdown(0);
     }
 
+    const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
     try {
       const response = await fetchWithExponentialBackoff('/api/tts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
-          text: textToRead,
+          text: sanitizedText,
           voiceName,
           model,
           language,
           gender,
           style,
-          apiKey
+          apiKey: effectiveKey
         })
-      });
+      }, 3, effectiveKey);
 
       const data = await response.json();
-      if (!response.ok || data.error) {
-        throw new Error(data.error || `HTTP error ${response.status}`);
+      if (data.fallback || data.isKeyError || !response.ok) {
+        console.warn("Gemini TTS fallback:", data.message || data.error);
+        handleBrowserSpeechFallback(textToRead);
+        setStatusMsg("Lecture vocale via la synthèse locale du navigateur active. Configurez votre clé API Gemini dans les Paramètres pour les voix HD.");
+        return;
+      }
+
+      if (!data.audio) {
+        handleBrowserSpeechFallback(textToRead);
+        setStatusMsg("Lecture vocale via la synthèse locale du navigateur active.");
+        return;
       }
 
       const base64Audio = data.audio;
@@ -588,7 +1042,7 @@ export default function App() {
         setTestAudioUrl(audioUrl);
         if (testAudioRef.current) {
           testAudioRef.current.src = audioUrl;
-          testAudioRef.current.play();
+          testAudioRef.current.play().catch(() => {});
         }
       } else {
         setCurrentAudioBlob(blob);
@@ -606,7 +1060,8 @@ export default function App() {
 
         if (audioRef.current) {
           audioRef.current.src = audioUrl;
-          audioRef.current.play();
+          audioRef.current.playbackRate = voicePitch;
+          audioRef.current.play().catch(() => {});
         }
 
         const projects = Object.keys(library);
@@ -618,14 +1073,15 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      console.error(err);
+      console.warn("TTS generation warning, using browser speech fallback:", err);
+      handleBrowserSpeechFallback(textToRead);
       const msg = err.message || "";
       if (msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
         setIsQuotaError(true);
         setRetryCountdown(30);
-        setStatusMsg("⚠️ Quota Gemini atteint. Nouvelle tentative automatique programmée avec backoff exponentiel.");
+        setStatusMsg("⚠️ Quota Gemini temporairement atteint. Lecture locale active.");
       } else {
-        setStatusMsg("Erreur : " + (msg || "Échec de la génération"));
+        setStatusMsg("Lecture vocale locale (navigateur) active.");
       }
     } finally {
       setIsGenerating(false);
@@ -633,12 +1089,16 @@ export default function App() {
     }
   };
 
-  const handleBrowserSpeechFallback = () => {
+  const handleBrowserSpeechFallback = (customText?: string) => {
+    const raw = customText || text || "";
+    // Clean asterisks and markdown tokens so browser speech doesn't pronounce "astérisque astérisque"
+    const textToSpeak = cleanTextForSpeech(raw);
+    if (!textToSpeak) return;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = language === 'Wolof' ? 'fr-FR' : (language === 'Anglais' ? 'en-US' : 'fr-FR');
-      utterance.rate = 1.0;
+      utterance.rate = Math.max(0.7, Math.min(1.4, voicePitch || 1.0));
       window.speechSynthesis.speak(utterance);
       setStatusMsg("Lecture de secours via la synthèse vocale du navigateur en cours...");
     } else {
@@ -668,7 +1128,7 @@ export default function App() {
 
   const getTrimmedAudioBlob = async (): Promise<Blob> => {
     if (!currentAudioBlob) return new Blob();
-    if (startTime <= 0 && endTime >= audioDuration - 0.1) {
+    if (startTime <= 0 && endTime >= audioDuration - 0.1 && fadeInDuration === 0 && fadeOutDuration === 0) {
       return currentAudioBlob;
     }
 
@@ -678,22 +1138,43 @@ export default function App() {
       const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
       const sampleRate = decodedBuffer.sampleRate;
-      const startSample = Math.floor(startTime * sampleRate);
-      const endSample = Math.min(Math.floor(endTime * sampleRate), decodedBuffer.length);
-      const frameCount = endSample - startSample;
-
-      if (frameCount <= 0) return currentAudioBlob;
+      const effectiveStart = Math.max(0, startTime);
+      const effectiveEnd = Math.min(audioDuration || decodedBuffer.duration, endTime > 0 ? endTime : decodedBuffer.duration);
+      const startSample = Math.floor(effectiveStart * sampleRate);
+      const endSample = Math.min(Math.floor(effectiveEnd * sampleRate), decodedBuffer.length);
+      const frameCount = Math.max(1, endSample - startSample);
 
       const offlineCtx = new OfflineAudioContext(decodedBuffer.numberOfChannels, frameCount, sampleRate);
       const source = offlineCtx.createBufferSource();
       source.buffer = decodedBuffer;
-      source.connect(offlineCtx.destination);
-      source.start(0, startTime, endTime - startTime);
+
+      const gainNode = offlineCtx.createGain();
+      source.connect(gainNode);
+      gainNode.connect(offlineCtx.destination);
+
+      const totalDuration = effectiveEnd - effectiveStart;
+      gainNode.gain.setValueAtTime(0, 0);
+
+      // Fade In
+      if (fadeInDuration > 0) {
+        gainNode.gain.linearRampToValueAtTime(1, Math.min(fadeInDuration, totalDuration / 2));
+      } else {
+        gainNode.gain.setValueAtTime(1, 0);
+      }
+
+      // Fade Out
+      if (fadeOutDuration > 0) {
+        const fadeOutStart = Math.max(totalDuration - fadeOutDuration, totalDuration / 2);
+        gainNode.gain.setValueAtTime(1, fadeOutStart);
+        gainNode.gain.linearRampToValueAtTime(0, totalDuration);
+      }
+
+      source.start(0, effectiveStart, totalDuration);
 
       const renderedBuffer = await offlineCtx.startRendering();
       return audioBufferToWavBlob(renderedBuffer);
     } catch (e) {
-      console.error("Trimming error:", e);
+      console.error("Trimming/Fade error:", e);
       return currentAudioBlob;
     }
   };
@@ -754,8 +1235,242 @@ export default function App() {
     return new Blob([out.buffer], { type: 'audio/wav' });
   };
 
+  const renderMixedAudioBlob = async (
+    voiceBlob: Blob,
+    backingTrackUrl: string | null,
+    voiceVol: number,
+    backingVol: number,
+    pitchRate: number = 1.0,
+    useCrossfade: boolean = true,
+    crossfadeDur: number = 1.5
+  ): Promise<Blob> => {
+    const voiceArrayBuffer = await voiceBlob.arrayBuffer();
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new AudioCtx();
+    const decodedVoice = await ctx.decodeAudioData(voiceArrayBuffer);
+
+    let decodedBacking: AudioBuffer | null = null;
+    if (backingTrackUrl) {
+      try {
+        const backingRes = await fetch(backingTrackUrl);
+        const backingArrayBuf = await backingRes.arrayBuffer();
+        decodedBacking = await ctx.decodeAudioData(backingArrayBuf);
+      } catch (e) {
+        console.warn("Could not load backing track for mix:", e);
+      }
+    }
+
+    const sampleRate = decodedVoice.sampleRate;
+    const effectivePitch = Math.max(0.5, Math.min(2.0, pitchRate || 1.0));
+    const adjustedVoiceDuration = decodedVoice.duration / effectivePitch;
+
+    // If no backing track is selected, render trimmed voice cleanly
+    if (!decodedBacking) {
+      const frameCount = Math.ceil(adjustedVoiceDuration * sampleRate);
+      const offlineCtx = new OfflineAudioContext(decodedVoice.numberOfChannels, frameCount, sampleRate);
+      const voiceSource = offlineCtx.createBufferSource();
+      voiceSource.buffer = decodedVoice;
+      voiceSource.playbackRate.value = effectivePitch;
+      const voiceGain = offlineCtx.createGain();
+      voiceGain.gain.setValueAtTime(voiceVol, 0);
+      voiceSource.connect(voiceGain);
+      voiceGain.connect(offlineCtx.destination);
+      voiceSource.start(0);
+      const renderedBuffer = await offlineCtx.startRendering();
+      return audioBufferToWavBlob(renderedBuffer);
+    }
+
+    // Crossfade calculation:
+    // With crossfade: add a smooth tail so the music fades out naturally after voice ends
+    const safeFadeDuration = useCrossfade ? Math.max(0.3, Math.min(4.0, crossfadeDur)) : 0.05;
+    const tailDuration = useCrossfade ? safeFadeDuration : 0.05;
+    const totalDuration = adjustedVoiceDuration + tailDuration;
+    const frameCount = Math.ceil(totalDuration * sampleRate);
+
+    const offlineCtx = new OfflineAudioContext(2, frameCount, sampleRate);
+
+    // 1. Voice setup with subtle anti-click micro-fades
+    const voiceSource = offlineCtx.createBufferSource();
+    voiceSource.buffer = decodedVoice;
+    voiceSource.playbackRate.value = effectivePitch;
+    const voiceGain = offlineCtx.createGain();
+
+    if (useCrossfade) {
+      const voiceFadeInTime = Math.min(0.04, adjustedVoiceDuration * 0.05);
+      voiceGain.gain.setValueAtTime(0, 0);
+      voiceGain.gain.linearRampToValueAtTime(voiceVol, voiceFadeInTime);
+
+      const voiceFadeOutStart = Math.max(voiceFadeInTime, adjustedVoiceDuration - 0.06);
+      voiceGain.gain.setValueAtTime(voiceVol, voiceFadeOutStart);
+      voiceGain.gain.linearRampToValueAtTime(0, adjustedVoiceDuration);
+    } else {
+      voiceGain.gain.setValueAtTime(voiceVol, 0);
+    }
+
+    voiceSource.connect(voiceGain);
+    voiceGain.connect(offlineCtx.destination);
+    voiceSource.start(0);
+
+    // 2. Backing track setup with automated Crossfade
+    const backingSource = offlineCtx.createBufferSource();
+    backingSource.buffer = decodedBacking;
+    backingSource.loop = true;
+    const backingGain = offlineCtx.createGain();
+
+    if (useCrossfade) {
+      // Intro Crossfade: gentle fade-in ramp up to backingVol
+      const introFade = Math.min(safeFadeDuration * 0.8, 1.2);
+      backingGain.gain.setValueAtTime(0, 0);
+      backingGain.gain.linearRampToValueAtTime(backingVol, introFade);
+
+      // Sustain backingVol during the speech
+      backingGain.gain.setValueAtTime(backingVol, adjustedVoiceDuration);
+
+      // Outro Crossfade: smooth decay to 0 over the tailDuration after speech ends
+      backingGain.gain.linearRampToValueAtTime(0, totalDuration);
+    } else {
+      backingGain.gain.setValueAtTime(backingVol, 0);
+      backingGain.gain.setValueAtTime(backingVol, adjustedVoiceDuration);
+      backingGain.gain.linearRampToValueAtTime(0, totalDuration);
+    }
+
+    backingSource.connect(backingGain);
+    backingGain.connect(offlineCtx.destination);
+    backingSource.start(0);
+    backingSource.stop(totalDuration);
+
+    const renderedBuffer = await offlineCtx.startRendering();
+    return audioBufferToWavBlob(renderedBuffer);
+  };
+
+  // Instant live zero-latency mixing: plays voice and backing track simultaneously in perfect sync
+  const handlePreviewMix = () => {
+    if (!currentAudioUrl) {
+      showToast("Veuillez d'abord générer ou écouter une voix avant de mixer.", "error");
+      return;
+    }
+
+    // Toggle live mix if already playing
+    if (isLiveMixPlaying) {
+      if (audioRef.current) audioRef.current.pause();
+      if (backingAudioRef.current) backingAudioRef.current.pause();
+      setIsLiveMixPlaying(false);
+      setIsAudioPlaying(false);
+      setIsBackingTrackPlaying(false);
+      showToast("Mix en pause.", "info");
+      return;
+    }
+
+    try {
+      // 1. Play Voice element immediately
+      if (audioRef.current) {
+        audioRef.current.currentTime = startTime || 0;
+        audioRef.current.playbackRate = voicePitch;
+        const safeVoiceVol = Math.max(0, Math.min(1, voiceVolume));
+        audioRef.current.volume = safeVoiceVol;
+        audioRef.current.play().catch(e => console.warn("Voice play error:", e));
+        setIsAudioPlaying(true);
+      }
+
+      // 2. Play Backing element synchronously
+      if (backingAudioRef.current && activeBackingTrack) {
+        backingAudioRef.current.currentTime = 0;
+        const safeBackingVol = Math.max(0, Math.min(1, backingVolume));
+        backingAudioRef.current.volume = safeBackingVol;
+        backingAudioRef.current.play().catch(e => console.warn("Backing play error:", e));
+        setIsBackingTrackPlaying(true);
+      }
+
+      setIsLiveMixPlaying(true);
+      showToast("⚡ Mix Voix + Fond lancé instantanément en temps réel !", "success");
+    } catch (e) {
+      console.warn("Instant live mix error:", e);
+    }
+  };
+
+  const handleTogglePreviewPlay = () => {
+    if (!previewAudioRef.current || !previewMixUrl) return;
+    if (previewAudioRef.current.paused) {
+      previewAudioRef.current.play().catch(e => console.warn("Play error:", e));
+      setIsPreviewPlaying(true);
+    } else {
+      previewAudioRef.current.pause();
+      setIsPreviewPlaying(false);
+    }
+  };
+
+  const handleStopPreview = () => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.currentTime = 0;
+    }
+    setIsPreviewPlaying(false);
+  };
+
+  const handleClosePreview = () => {
+    handleStopPreview();
+    if (previewMixUrl) {
+      URL.revokeObjectURL(previewMixUrl);
+    }
+    setPreviewMixUrl(null);
+  };
+
+  const handleMixAndRecordFinal = async () => {
+    if (!currentAudioBlob) {
+      showToast("Veuillez d'abord générer ou importer un fichier vocal.", "error");
+      return;
+    }
+
+    handleStopPreview();
+
+    setIsMixingFinal(true);
+    setStatusMsg(`Mixage ${enableCrossfade ? `avec Crossfade (${crossfadeDuration.toFixed(1)}s)` : ''} et enregistrement en cours...`);
+    try {
+      const mixedBlob = await renderMixedAudioBlob(
+        currentAudioBlob,
+        activeBackingTrack ? activeBackingTrack.url : null,
+        voiceVolume,
+        backingVolume,
+        voicePitch,
+        enableCrossfade,
+        crossfadeDuration
+      );
+      const mixedUrl = URL.createObjectURL(mixedBlob);
+
+      setCurrentAudioBlob(mixedBlob);
+      setCurrentAudioUrl(mixedUrl);
+      if (audioRef.current) {
+        audioRef.current.src = mixedUrl;
+      }
+
+      const audioEl = new Audio(mixedUrl);
+      audioEl.onloadedmetadata = () => {
+        const dur = audioEl.duration || 10;
+        setAudioDuration(dur);
+        setStartTime(0);
+        setEndTime(dur);
+      };
+
+      showToast(
+        enableCrossfade
+          ? `Mix final réussi avec Crossfade automatique (${crossfadeDuration.toFixed(1)}s) !`
+          : "Mix final (Voix + Fond) enregistré avec succès !",
+        "success"
+      );
+      setStatusMsg("Mix final prêt !");
+    } catch (err) {
+      console.error("Mix error:", err);
+      showToast("Erreur lors du mixage audio.", "error");
+    } finally {
+      setIsMixingFinal(false);
+    }
+  };
+
   const handleSaveToLibrary = async () => {
-    if (!currentAudioBlob) return;
+    if (!currentAudioBlob && !text.trim()) {
+      showToast("Rien à enregistrer. Saisissez du texte ou générez un audio.", "error");
+      return;
+    }
     
     let targetProj = selectedProject;
     if (targetProj === '__NEW__' || !targetProj) {
@@ -766,8 +1481,6 @@ export default function App() {
       }
     }
 
-    const trimmedBlob = await getTrimmedAudioBlob();
-    const base64Audio = await blobToBase64(trimmedBlob);
     const itemName = saveTitle.trim() || 'Piste_01';
     const formattedTextContent = `[Studio: VoxArt - Studio RidiaLArt-Vision]\n[Empreinte / Produit par: Studio RidiaLArt-Vision]\n[Date: ${new Date().toISOString().split('T')[0]}]\n----------------------------------------\n\n` + text;
 
@@ -776,21 +1489,114 @@ export default function App() {
       updatedLib[targetProj] = { audios: [], texts: [] };
     }
 
-    updatedLib[targetProj].audios.push({
-      id: Date.now(),
-      name: itemName,
-      data: base64Audio
-    });
+    if (currentAudioBlob) {
+      const trimmedBlob = await getTrimmedAudioBlob();
+      const base64Audio = await blobToBase64(trimmedBlob);
+      updatedLib[targetProj].audios.push({
+        id: Date.now(),
+        name: itemName,
+        data: base64Audio
+      });
+    }
 
-    updatedLib[targetProj].texts.push({
-      id: Date.now() + 1,
-      name: `${itemName}_script`,
-      content: formattedTextContent
-    });
+    if (text.trim()) {
+      updatedLib[targetProj].texts.push({
+        id: Date.now() + 1,
+        name: `${itemName}_script`,
+        content: formattedTextContent
+      });
+    }
 
     saveLibraryToStorage(updatedLib);
     showToast(`Enregistré avec succès dans le projet "${targetProj}" (Studio RidiaLArt-Vision) !`, "success");
+    setShowSaveSection(false);
     setCurrentView('library');
+  };
+
+  const handleDownloadAudioFile = async (format: 'mp3' | 'wav') => {
+    try {
+      const blob = await getTrimmedAudioBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const fileName = (saveTitle.trim() || 'VoxArt_Audio').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `${fileName}.${format === 'mp3' ? 'mp3' : 'wav'}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast(`Audio téléchargé avec succès en .${format} !`, "success");
+    } catch (e) {
+      console.error("Download error:", e);
+      showToast("Erreur lors du téléchargement de l'audio.", "error");
+    }
+  };
+
+  const handleShareSocial = async (platform: 'whatsapp' | 'twitter' | 'facebook' | 'linkedin' | 'telegram' | 'native') => {
+    const shareText = `🎙️ Écoutez cette création audio générée sur VoxArt (Studio RidiaLArt-Vision) : "${saveTitle || 'Piste Vocale'}" ! 🎧✨`;
+    const shareUrl = window.location.href;
+
+    if (platform === 'native' && navigator.share) {
+      try {
+        await navigator.share({
+          title: 'VoxArt Audio - Studio RidiaLArt-Vision',
+          text: shareText,
+          url: shareUrl,
+        });
+        showToast("Partagé avec succès !", "success");
+        return;
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          console.warn("Native share error:", err);
+        }
+      }
+    }
+
+    let url = '';
+    switch (platform) {
+      case 'whatsapp':
+        url = `https://api.whatsapp.com/send?text=${encodeURIComponent(shareText + ' ' + shareUrl)}`;
+        break;
+      case 'twitter':
+        url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shareUrl)}`;
+        break;
+      case 'facebook':
+        url = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`;
+        break;
+      case 'linkedin':
+        url = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
+        break;
+      case 'telegram':
+        url = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(shareText)}`;
+        break;
+      default:
+        break;
+    }
+
+    if (url) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      showToast("Redirection vers la plateforme de partage...", "info");
+    } else {
+      await copyTextToClipboard(shareText + ' ' + shareUrl);
+      showToast("Lien et message copiés dans le presse-papier !", "success");
+    }
+  };
+
+  const handleSaveAnyToLibrary = (project: string, category: 'audios' | 'texts' | 'videos', name: string, data: string) => {
+    const updatedLib = { ...library };
+    if (!updatedLib[project]) {
+      updatedLib[project] = { audios: [], texts: [], videos: [] };
+    }
+    if (!updatedLib[project][category]) {
+      updatedLib[project][category] = [];
+    }
+    updatedLib[project][category].push({
+      id: Date.now(),
+      name,
+      data: category === 'texts' ? undefined : data,
+      content: category === 'texts' ? data : undefined
+    } as any);
+    saveLibraryToStorage(updatedLib);
   };
 
   const handleSaveRhythmToLibrary = (
@@ -1174,10 +1980,13 @@ export default function App() {
       setBatchQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: 'generating', errorMsg: undefined } : item));
 
       try {
-        const textToRead = batchQueue[i].text;
+        const textToRead = cleanTextForSpeech(batchQueue[i].text);
+        const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
         const response = await fetchWithExponentialBackoff('/api/tts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json'
+          },
           body: JSON.stringify({
             text: textToRead,
             voiceName,
@@ -1185,9 +1994,9 @@ export default function App() {
             language,
             gender,
             style,
-            apiKey
+            apiKey: effectiveKey
           })
-        });
+        }, 3, effectiveKey);
 
         const data = await response.json();
         if (!response.ok || data.error) {
@@ -1280,19 +2089,23 @@ ${textToRead}`;
     setBatchQueue(prev => prev.map((it, idx) => idx === index ? { ...it, status: 'generating', errorMsg: undefined } : it));
 
     try {
+      const sanitizedBatchText = cleanTextForSpeech(item.text);
+      const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
       const response = await fetchWithExponentialBackoff('/api/tts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
-          text: item.text,
+          text: sanitizedBatchText,
           voiceName,
           model,
           language,
           gender,
           style,
-          apiKey
+          apiKey: effectiveKey
         })
-      });
+      }, 3, effectiveKey);
 
       const data = await response.json();
       if (!response.ok || data.error) {
@@ -1303,13 +2116,41 @@ ${textToRead}`;
       const binary = atob(base64Audio);
       const bytes = new Uint8Array(binary.length);
       for (let b = 0; b < binary.length; b++) bytes[b] = binary.charCodeAt(b);
-      const blob = new Blob([bytes], { type: 'audio/mp3' });
+      let blob = new Blob([bytes], { type: 'audio/mp3' });
+      let finalBase64Audio = base64Audio;
+
+      if (batchCompressMp3) {
+        try {
+          const arrayBuffer = await blob.arrayBuffer();
+          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+          const tempCtx = new AudioCtx();
+          const decoded = await tempCtx.decodeAudioData(arrayBuffer);
+          const offlineCtx = new OfflineAudioContext(1, Math.floor(decoded.duration * 22050), 22050);
+          const source = offlineCtx.createBufferSource();
+          source.buffer = decoded;
+          source.connect(offlineCtx.destination);
+          source.start(0);
+          const rendered = await offlineCtx.startRendering();
+          blob = audioBufferToWavBlob(rendered);
+
+          const compressedBuffer = await blob.arrayBuffer();
+          const compressedBytes = new Uint8Array(compressedBuffer);
+          let binaryCompressed = '';
+          for (let i = 0; i < compressedBytes.byteLength; i++) {
+            binaryCompressed += String.fromCharCode(compressedBytes[i]);
+          }
+          finalBase64Audio = btoa(binaryCompressed);
+        } catch (compErr) {
+          console.warn("Compression warning:", compErr);
+        }
+      }
+
       const audioUrl = URL.createObjectURL(blob);
 
       const audioItem: SavedAudioItem = {
         id: Date.now(),
         name: item.name,
-        data: `data:audio/mp3;base64,${base64Audio}`
+        data: `data:audio/mp3;base64,${finalBase64Audio}`
       };
 
       const formattedScript = `[Studio: VoxArt - RidiaLArt-Vision]
@@ -1413,14 +2254,24 @@ ${item.text}`;
       <div className="flex items-center justify-between px-4 py-2 bg-[#181825]/90 border-b border-[#313244]/40 backdrop-blur-sm sticky top-0 z-40">
         <div className="flex items-center gap-2">
           <select
-            value={currentView}
-            onChange={(e) => setCurrentView(e.target.value as any)}
+            value={homeMode === 'video_dubbing' && currentView === 'home' ? 'video_dubbing' : currentView}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === 'video_dubbing') {
+                setCurrentView('home');
+                setHomeMode('video_dubbing');
+              } else {
+                setCurrentView(val as any);
+              }
+            }}
             className="bg-[#1e1e2e] text-[#89b4fa] font-bold text-xs px-3 py-1.5 rounded-xl border border-[#313244] shadow-md focus:outline-none focus:border-[#89b4fa] cursor-pointer"
             title="Volet déroulant des rubriques"
           >
-            <option value="home">🏠 Accueil Studio</option>
+            <option value="home">🏠 Accueil Studio Vocal</option>
+            <option value="video_dubbing">🎬 Doublage Vidéo (Voix Off & Fond Sonore)</option>
             <option value="rhythm_studio">🥁 Atelier Rythmes</option>
             <option value="library">📚 Bibliothèque ({Object.keys(library).length})</option>
+            <option value="knowledge_base">📖 Base de Connaissance (RAG)</option>
             <option value="settings">⚙️ Réglages</option>
           </select>
         </div>
@@ -1468,315 +2319,788 @@ ${item.text}`;
               <div className="text-xs text-[#a6adc8] uppercase tracking-widest font-medium mt-1">Studio RidiaLArt-Vision</div>
             </div>
             
-            {/* Mode Selection Buttons right under logo */}
-            <div className="flex gap-2 justify-center pt-1 pb-1">
-              <button
-                type="button"
-                onClick={() => handleSelectThemeMode('standard')}
-                className={`flex-1 py-2 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
-                  themeMode === 'standard'
-                    ? 'bg-[#89b4fa] text-[#11111b] border-[#89b4fa] shadow-md'
-                    : 'bg-[#313244] text-[#cdd6f4] border-[#45475a] hover:bg-[#45475a]'
-                }`}
-              >
-                <Radio className="w-3.5 h-3.5" />
-                <span>Mode Standard</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSelectThemeMode('ridialart')}
-                className={`flex-1 py-2 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
-                  themeMode === 'ridialart'
-                    ? 'bg-gradient-to-r from-[#d97706] to-[#f59e0b] text-[#1c0f04] border-[#fbbf24] shadow-md'
-                    : 'bg-[#313244] text-[#fbbf24] border-[#45475a] hover:bg-[#45475a]'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5 text-[#fbbf24]" />
-                <span>Mode RidiaLArt</span>
-              </button>
-            </div>
-
-            {/* Mode Switcher: Mode Standard vs Traitement par lots */}
-            <div className="flex p-1 bg-[#181825] rounded-xl border border-[#313244] gap-1">
+            {/* Mode Switcher */}
+            <div className="flex p-1 bg-[#181825] rounded-xl border border-[#313244] gap-1 flex-wrap">
               <button
                 type="button"
                 onClick={() => setHomeMode('single')}
-                className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                className={`flex-1 min-w-[100px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   homeMode === 'single'
                     ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
                     : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
                 }`}
               >
                 <Mic className="w-3.5 h-3.5" />
-                <span>Texte unique</span>
+                <span>🎙️ Studio Vocal</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setHomeMode('video_dubbing')}
+                className={`flex-1 min-w-[130px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  homeMode === 'video_dubbing' || homeMode === 'transcription'
+                    ? 'bg-gradient-to-r from-[#fbbf24] to-[#f59e0b] text-[#1c0f04] shadow-md font-black'
+                    : 'text-[#fbbf24] border border-[#fbbf24]/40 hover:bg-[#fbbf24]/10'
+                }`}
+                title="Importer une vidéo pour y ajouter une Voix Off et un Fond Sonore"
+              >
+                <Film className="w-3.5 h-3.5" />
+                <span>🎬 Doublage Vidéo</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setHomeMode('workspace')}
+                className={`flex-1 min-w-[95px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  homeMode === 'workspace'
+                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                    : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
+                }`}
+              >
+                <Bot className="w-3.5 h-3.5" />
+                <span>💬 Agent IA</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setHomeMode('batch')}
-                className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                className={`flex-1 min-w-[75px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   homeMode === 'batch'
                     ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
                     : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>Traitement par lots (Multi-clips)</span>
+                <span>📦 Lots</span>
                 {batchQueue.length > 0 && (
-                  <span className="text-[10px] bg-[#11111b]/20 px-1.5 py-0.5 rounded-full font-bold">
+                  <span className="text-[10px] bg-[#11111b]/20 px-1.5 py-0.2 rounded-full font-bold">
                     {batchCompletedCount}/{batchQueue.length}
                   </span>
                 )}
               </button>
             </div>
 
+            {homeMode === 'workspace' && (
+              <UnifiedStudioWorkspace
+                currentText={text}
+                setCurrentText={setText}
+                apiKey={apiKey}
+                onOpenSettings={() => setCurrentView('settings')}
+                addToast={showToast}
+                library={library}
+                onSaveToLibrary={handleSaveAnyToLibrary}
+                onPreviewTTS={handlePreview}
+                onPreviewMix={handlePreviewMix}
+                isGenerating={isGenerating}
+                currentAudioUrl={currentAudioUrl}
+                onSpeakText={(txt: string) => generateTTS(txt)}
+                onTransferToVocalStudio={handleTransferFromAgent}
+                onSwitchToStudio={() => setHomeMode('single')}
+              />
+            )}
+
+            {(homeMode === 'transcription' || homeMode === 'video_dubbing') && (
+              <TranscriptionStudio
+                apiKey={apiKey}
+                addToast={showToast}
+                activeBackingTrack={activeBackingTrack}
+                initialVideoFile={preloadedVideoFile}
+                initialText={text}
+                library={library}
+                onSwitchMode={(mode) => setHomeMode(mode as any)}
+                onInsertTextToStudio={(transcribedText) => {
+                  setText(transcribedText);
+                  setHomeMode('single');
+                  showToast('Texte injecté dans le Studio Vocal !', 'success');
+                }}
+                onInsertTextToAgent={(transcribedText) => {
+                  setText(transcribedText);
+                  setHomeMode('workspace');
+                  showToast('Texte transféré dans l\'Agent IA pour analyse & scénarios !', 'success');
+                }}
+              />
+            )}
+
             {homeMode === 'single' ? (
-              <>
-
-
-                {/* ACTIVE RHYTHM BACKING TRACK CONTROLLER */}
-                {activeBackingTrack && (
-                  <div className="bg-[#241307] p-3 rounded-xl border border-[#fbbf24]/50 flex items-center justify-between gap-3 text-xs shadow-md">
-                    <div className="flex items-center gap-2 truncate">
-                      <Disc className="w-4 h-4 text-[#fbbf24] animate-spin shrink-0" style={{ animationDuration: isBackingTrackPlaying ? '2s' : '10s' }} />
-                      <div className="truncate">
-                        <span className="text-[10px] text-[#fde68a]/60 block">Accompagnement rythmique actif :</span>
-                        <span className="text-[#fbbf24] font-bold truncate">{activeBackingTrack.title}</span>
+              <div className="space-y-3.5 animate-fadeIn">
+                {/* CARTE MIS EN AVANT : IMPORTER UNE VIDÉO (VOIX OFF + FOND SONORE) */}
+                <div className="bg-gradient-to-r from-[#181825] via-[#24172a] to-[#1c1429] rounded-2xl border-2 border-[#fbbf24]/50 p-4 shadow-xl space-y-3 relative overflow-hidden group">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#fbbf24] via-[#f59e0b] to-[#ec4899] flex items-center justify-center text-[#11111b] shadow-lg shrink-0">
+                        <Film className="w-5 h-5 font-black" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="text-sm font-bold text-white tracking-wide">
+                            🎬 Doublage Vidéo : Voix Off & Fond Sonore
+                          </h3>
+                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-[#fbbf24]/20 text-[#fbbf24] border border-[#fbbf24]/30">
+                            Nouveau
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#a6adc8]">
+                          Importez une vidéo pour générer une voix off synchronisée, ajouter une musique d'ambiance et incruster les sous-titres.
+                        </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <audio
-                        ref={backingAudioRef}
-                        src={activeBackingTrack.url}
-                        loop
-                        onPlay={() => setIsBackingTrackPlaying(true)}
-                        onPause={() => setIsBackingTrackPlaying(false)}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (backingAudioRef.current) {
-                            if (isBackingTrackPlaying) {
-                              backingAudioRef.current.pause();
-                            } else {
-                              backingAudioRef.current.play();
-                            }
-                          }
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                          isBackingTrackPlaying
-                            ? 'bg-[#ef4444] text-white'
-                            : 'bg-gradient-to-r from-[#d97706] to-[#f59e0b] text-[#1c0f04]'
-                        }`}
-                      >
-                        {isBackingTrackPlaying ? '⏸️ Pause Beat' : '▶️ Lancer Beat'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (backingAudioRef.current) backingAudioRef.current.pause();
-                          setActiveBackingTrack(null);
-                          setIsBackingTrackPlaying(false);
-                        }}
-                        className="p-1.5 text-xs text-[#f87171] hover:bg-[#ef4444]/20 rounded transition-all"
-                        title="Retirer cet accompagnement"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setHomeMode('video_dubbing')}
+                      className="px-3.5 py-2 rounded-xl text-xs font-bold bg-[#fbbf24] text-[#1c0f04] hover:bg-[#f59e0b] transition-all flex items-center justify-center gap-1.5 shadow-md shrink-0 cursor-pointer"
+                    >
+                      <span>Ouvrir Studio Vidéo</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Zone Drag & Drop Vidéo */}
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const droppedFile = e.dataTransfer.files?.[0];
+                      if (droppedFile && (droppedFile.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(droppedFile.name))) {
+                        setPreloadedVideoFile(droppedFile);
+                        setHomeMode('video_dubbing');
+                        showToast(`Vidéo "${droppedFile.name}" importée avec succès !`, "success");
+                      } else {
+                        showToast("Veuillez déposer un fichier vidéo valide (MP4, WebM, MOV)", "error");
+                      }
+                    }}
+                    className="border-2 border-dashed border-[#fbbf24]/40 hover:border-[#fbbf24] bg-[#11111b]/70 hover:bg-[#11111b]/95 rounded-xl p-3.5 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-1.5"
+                    onClick={() => homeVideoInputRef.current?.click()}
+                  >
+                    <input
+                      ref={homeVideoInputRef}
+                      type="file"
+                      accept="video/mp4,video/webm,video/quicktime,video/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const selected = e.target.files?.[0];
+                        if (selected) {
+                          setPreloadedVideoFile(selected);
+                          setHomeMode('video_dubbing');
+                          showToast(`Vidéo "${selected.name}" importée avec succès !`, "success");
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                    <div className="flex items-center gap-2 text-xs font-bold text-[#f9e2af]">
+                      <Upload className="w-4 h-4 text-[#fbbf24]" />
+                      <span>Cliquez pour importer une vidéo ou glissez-déposez votre fichier ici</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[#a6adc8] flex-wrap justify-center">
+                      <span className="bg-[#313244] px-2 py-0.5 rounded text-[#89b4fa]">MP4 • WebM • MOV</span>
+                      <span>•</span>
+                      <span className="text-[#a6e3a1]">🎙️ Voix Off IA</span>
+                      <span>•</span>
+                      <span className="text-[#fbbf24]">🎵 Fond Sonore & Rythmes Africains</span>
+                      <span>•</span>
+                      <span className="text-[#cba6f7]">📜 Sous-titres Hardsub</span>
                     </div>
                   </div>
-                )}
+                </div>
+
                 {isQuotaError && (
-                  <div className="p-4 rounded-xl bg-red-500/20 border border-red-500/30 text-red-200 text-xs space-y-3">
+                  <div className="p-3.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-200 text-xs space-y-2">
                     <div className="flex items-center gap-2 font-bold text-red-300">
                       <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-                      <span>File d'attente intelligente — Quota Gemini Atteint</span>
+                      <span>Quota temporairement atteint</span>
                     </div>
                     <p className="leading-relaxed">
-                      Le système a appliqué un backoff exponentiel. Rétablissement estimé dans : <strong className="text-white font-mono text-sm">{retryCountdown}s</strong>
+                      Rétablissement automatique dans : <strong className="text-white font-mono">{retryCountdown}s</strong>
                     </p>
-                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                    <div className="flex items-center gap-2 pt-1">
                       <button
                         onClick={() => { setRetryCountdown(0); handlePreview(); }}
-                        className="flex-1 min-w-[120px] py-2 rounded-lg bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-all"
+                        className="py-1.5 px-3 rounded-lg bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-all"
                       >
-                        Réessayer maintenant
+                        Réessayer
                       </button>
                       <button
                         onClick={cancelQuotaRetry}
-                        className="py-2 px-3 rounded-lg bg-red-950/60 text-red-300 border border-red-500/30 hover:bg-red-900/60 font-semibold text-xs transition-all"
+                        className="py-1.5 px-3 rounded-lg bg-red-950/60 text-red-300 border border-red-500/30 hover:bg-red-900/60 text-xs transition-all"
                       >
-                        Annuler la file
-                      </button>
-                      <button
-                        onClick={handleBrowserSpeechFallback}
-                        className="flex-1 min-w-[140px] py-2 rounded-lg bg-[#313244] text-[#89b4fa] border border-[#89b4fa]/40 font-bold text-xs hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
-                      >
-                        🔊 Secours Navigateur
+                        Annuler
                       </button>
                     </div>
                   </div>
                 )}
 
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-xs font-semibold text-[#a6adc8]">Texte à convertir :</label>
+                {/* STUDIO DE VOIX, LANGUE & ACCENT (TEXT-TO-AUDIO) */}
+                <div className="bg-[#181825]/95 rounded-2xl border border-[#89b4fa]/30 p-3.5 sm:p-4 space-y-3 shadow-lg animate-fadeIn">
+                  <div className="flex items-center justify-between border-b border-[#313244]/80 pb-2.5">
                     <div className="flex items-center gap-2">
-                      {isAnalyzingSentiment && (
-                        <span className="text-[10px] text-[#89b4fa] flex items-center gap-1">
-                          <RefreshCw className="w-3 h-3 animate-spin" /> Analyse d'expressivité...
+                      <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow">
+                        <Mic className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-[#89b4fa] flex items-center gap-2">
+                          <span>Configuration Vocale, Langue & Accent</span>
+                        </h4>
+                        <p className="text-[10px] text-[#a6adc8]">
+                          Personnalisez le timbre (homme/femme), la voix Gemini, la langue et l'accent de sortie
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentView('settings')}
+                      className="px-2 py-1 rounded-lg text-[11px] font-bold bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] border border-[#89b4fa]/30 transition-all flex items-center gap-1 cursor-pointer"
+                      title="Ouvrir les paramètres avancés"
+                    >
+                      <Settings className="w-3 h-3" />
+                      <span>Paramètres Avancés</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* Voix Gemini Prebuilt */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">
+                        Voix Gemini :
+                      </label>
+                      <select
+                        value={voiceName}
+                        onChange={(e) => setVoiceName(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-[#11111b] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#89b4fa] cursor-pointer"
+                      >
+                        {PRESET_VOICES.map(v => (
+                          <option key={v.id} value={v.id}>{v.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Langue */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">
+                        Langue :
+                      </label>
+                      <select
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-[#11111b] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#89b4fa] cursor-pointer"
+                      >
+                        <option value="Français">🇫🇷 Français (Standard / International)</option>
+                        <option value="Anglais">🇬🇧 Anglais (English)</option>
+                        <option value="Wolof">🇸🇳 Wolof (Sénégal & Afrique de l'Ouest)</option>
+                      </select>
+                    </div>
+
+                    {/* Timbre & Genre */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">
+                        Timbre & Genre :
+                      </label>
+                      <select
+                        value={gender}
+                        onChange={(e) => setGender(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-[#11111b] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#89b4fa] cursor-pointer"
+                      >
+                        <option value="voix masculine grave, profonde et résonnante (homme)">🚹 Homme (Grave & Profond)</option>
+                        <option value="voix féminine mélodieuse, claire et expressive (femme)">🚺 Femme (Mélodieuse & Claire)</option>
+                        <option value="voix neutre, posée et feutrée">⚖️ Neutre & Feutré</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Espace Épuré : Zone de texte & Auto-sauvegarde 30s */}
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <label className="block text-xs font-semibold text-[#a6adc8]">Texte à convertir :</label>
+                      {/* Outil de nettoyage immédiat des astérisques et markdown */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!text.trim()) {
+                            showToast("Aucun texte à nettoyer.", "info");
+                            return;
+                          }
+                          const cleaned = cleanTextForSpeech(text);
+                          setText(cleaned);
+                          showToast("Astérisques (*) et balises markdown supprimés avec succès !", "success");
+                        }}
+                        className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] border border-[#89b4fa]/30 transition-all flex items-center gap-1 cursor-pointer"
+                        title="Supprime les astérisques (*) et le formatage markdown pour une synthèse vocale limpide sans bruit"
+                      >
+                        <span>🧹 Nettoyer astérisques (*)</span>
+                      </button>
+
+                      {/* Bouton de sauvegarde du préréglage par défaut */}
+                      <button
+                        type="button"
+                        onClick={handleSaveDefaultPreset}
+                        className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] border border-[#a6e3a1]/30 transition-all flex items-center gap-1 cursor-pointer"
+                        title="Sauvegarder ce réglage de voix et volumes par défaut à chaque ouverture"
+                      >
+                        <Save className="w-2.5 h-2.5 text-[#a6e3a1]" />
+                        <span>{hasCustomDefaultPreset ? 'Préréglage par défaut actif' : 'Sauvegarder par défaut'}</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {lastAutoSaveTime && (
+                        <span className="text-[10px] text-[#a6e3a1] bg-[#a6e3a1]/10 border border-[#a6e3a1]/20 px-2 py-0.5 rounded-md flex items-center gap-1 font-mono" title="Auto-sauvegarde active toutes les 30 secondes">
+                          <Check className="w-2.5 h-2.5 text-[#a6e3a1]" /> Auto-sauvegardé ({lastAutoSaveTime})
                         </span>
                       )}
-                      <span className="text-[10px] text-[#a6adc8]">{text.length} caractères</span>
+                      <span className="text-[10px] text-[#6c7086] font-mono">{text.length} caractères</span>
                     </div>
                   </div>
                   <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     placeholder="Saisissez ou collez votre texte ici..."
-                    className="w-full h-36 p-3 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm resize-y"
+                    className="w-full h-36 p-3 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm resize-y focus:outline-none focus:border-[#89b4fa] transition-colors"
                   />
                 </div>
 
-                {/* DYNAMIC SENTIMENT ANALYSIS & EXPRESSIVENESS OPTIMIZER */}
-                {text.trim().length >= 12 && (
-                  <div className="p-3.5 rounded-xl bg-[#181825] border border-[#89b4fa]/30 space-y-2.5 transition-all">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#89b4fa]">
-                        <Sparkles className="w-4 h-4 text-[#f9e2af]" />
-                        <span>Analyse de Sentiment & Expressivité</span>
-                        {isAnalyzingSentiment && (
-                          <RefreshCw className="w-3 h-3 text-[#89b4fa] animate-spin ml-1" />
-                        )}
+                {/* MODULE INTÉGRÉ DANS LA PAGE D'ACCUEIL : CHOIX, COMPOSITION ET MIXAGE DU FOND SONORE */}
+                <div className="bg-[#181825]/95 rounded-2xl border border-[#fbbf24]/30 p-3.5 sm:p-4 space-y-3 shadow-lg animate-fadeIn">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#313244]/80 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-[#d97706] to-[#fbbf24] flex items-center justify-center text-[#1c0f04] shadow">
+                        <Music className="w-4 h-4 font-black" />
                       </div>
-                      
-                      <div className="flex items-center gap-2">
-                        {/* Auto-apply toggle */}
-                        <button
-                          type="button"
-                          onClick={handleToggleAutoApplySentiment}
-                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all flex items-center gap-1 font-semibold ${
-                            autoApplySentimentStyle
-                              ? 'bg-[#a6e3a1]/20 text-[#a6e3a1] border-[#a6e3a1]/40'
-                              : 'bg-[#313244] text-[#a6adc8] border-[#45475a] hover:text-[#cdd6f4]'
-                          }`}
-                          title="Applique immédiatement et en continu le style suggéré par l'analyse"
-                        >
-                          <Check className={`w-3 h-3 ${autoApplySentimentStyle ? 'opacity-100' : 'opacity-40'}`} />
-                          <span>Application auto {autoApplySentimentStyle ? 'activée' : 'désactivée'}</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => runSentimentAnalysis(text, false)}
-                          disabled={isAnalyzingSentiment}
-                          className="text-[10px] text-[#89b4fa] hover:underline flex items-center gap-1"
-                        >
-                          <RefreshCw className={`w-2.5 h-2.5 ${isAnalyzingSentiment ? 'animate-spin' : ''}`} />
-                          <span>Réanalyser</span>
-                        </button>
+                      <div>
+                        <h4 className="text-xs font-bold text-[#f9e2af] flex items-center gap-2">
+                          <span>Fond Sonore, Composition & Mixage</span>
+                          {activeBackingTrack && (
+                            <span className="text-[10px] bg-[#fbbf24]/20 text-[#fbbf24] px-1.5 py-0.2 rounded font-mono">
+                              Actif
+                            </span>
+                          )}
+                        </h4>
+                        <p className="text-[10px] text-[#a6adc8]">
+                          Choisissez une ambiance musicale, composez vos rythmes ou mixez en direct avec la voix
+                        </p>
                       </div>
                     </div>
 
-                    {sentimentResult ? (
-                      <div className="space-y-2 text-xs">
-                        {/* Mood & Sentiment Badge */}
-                        <div className="flex items-center justify-between flex-wrap gap-1.5 bg-[#313244]/60 p-2 rounded-lg border border-[#45475a]/40">
-                          <div className="flex items-center gap-1.5 font-medium text-[#cdd6f4]">
-                            <span className="text-base">{sentimentResult.moodEmoji}</span>
-                            <span>Tonalité détectée : <strong className="text-[#f9e2af]">{sentimentResult.sentiment}</strong></span>
+                    {/* Actions directes vers les studios de composition et mixage complets */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentView('rhythm_studio')}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#2b1708] border border-[#fbbf24]/40 text-[#fbbf24] hover:bg-[#fbbf24] hover:text-[#1c0f04] transition-all flex items-center gap-1 shadow-sm cursor-pointer"
+                        title="Ouvrir le séquenceur pas-à-pas pour composer des polyrythmies sur mesure"
+                      >
+                        <Sparkles className="w-3 h-3 text-[#fbbf24]" />
+                        <span>Composer un Rythme</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowMixer(prev => !prev)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 shadow-sm cursor-pointer ${
+                          showMixer
+                            ? 'bg-[#fbbf24] text-[#1c0f04] border-[#fbbf24]'
+                            : 'bg-[#313244] text-[#cdd6f4] border-[#45475a] hover:bg-[#45475a]'
+                        }`}
+                        title="Ouvrir le panneau complet du studio de mixage (bibliothèque, importation, presets)"
+                      >
+                        <Sliders className="w-3 h-3" />
+                        <span>{showMixer ? 'Masquer Studio' : 'Studio Complet'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Barre de sélection directe du fond sonore */}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <div className="flex-1">
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">
+                        Sélectionner le fond sonore d'accompagnement :
+                      </label>
+                      <div className="relative">
+                        <select
+                          value={activeBackingTrack ? activeBackingTrack.title : '__NONE__'}
+                          disabled={isApplyingQuickBacking}
+                          onChange={(e) => handleQuickSelectPreset(e.target.value)}
+                          className="w-full p-2.5 rounded-xl bg-[#11111b] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#fbbf24] disabled:opacity-50 cursor-pointer"
+                        >
+                          <option value="__NONE__">🔇 Aucun fond sonore (Voix a cappella)</option>
+                          <optgroup label="── Rythmes Traditionnels Africains (Loops) ──">
+                            <option value="aube_kora_sahel">🪕 Aube Sahélienne & Kora Mandingue (12/8 - 104 BPM)</option>
+                            <option value="sabar_kaolack">🥁 Sabar Kaolack Polyrythmique (12/8 - 114 BPM)</option>
+                            <option value="balafon_casamance_fleuve">🪵 Balafon Solaire de Casamance (4/4 - 108 BPM)</option>
+                            <option value="mystique_flute_peulh">🪈 Mystique Pastorale & Flûte Peulh (6/8 - 96 BPM)</option>
+                            <option value="rituel_appel_ancetres">⚡ Djembé & Rituel Ancestral (4/4 - 92 BPM)</option>
+                            <option value="mbalax_thieboudienne">🎉 Mbalax Thiéboudiène Festif (12/8 - 118 BPM)</option>
+                            <option value="dub_roots_senegal">🌌 Dub Roots Ancestral RidiaLArt (4/4 - 76 BPM)</option>
+                          </optgroup>
+                          <optgroup label="── Ambiances Naturelles & Sahéliennes ──">
+                            <option value="foret_brousse">🌳 Forêt Sacrée & Brousse (Casamance)</option>
+                            <option value="village_pilon">🛖 Matinée au Village (Pilons de mil & aube)</option>
+                            <option value="marche_sandaga">🧺 Marché Sandaga & Palabres Sahéliennes</option>
+                            <option value="fleuve_pirogue">🛶 Fleuve Sénégal & Clapotis de Pirogue</option>
+                            <option value="nuit_savane">✨ Nuit Sahélienne & Grillons Mystiques</option>
+                          </optgroup>
+                          <optgroup label="── Création & Personnalisation ──">
+                            <option value="__COMPOSE__">✨ Composer un rythme sur mesure (Studio Rythmique)...</option>
+                            <option value="__STUDIO__">🎛️ Ouvrir le Studio complet (Bibliothèque, Effets, Mix)...</option>
+                            <option value="__UPLOAD__">📁 Importer un fichier audio MP3/WAV personnel...</option>
+                          </optgroup>
+                        </select>
+                        {isApplyingQuickBacking && (
+                          <div className="absolute right-3 top-2.5">
+                            <RefreshCw className="w-4 h-4 text-[#fbbf24] animate-spin" />
                           </div>
-                          {sentimentResult.speechPaceTip && (
-                            <span className="text-[10px] text-[#89b4fa] bg-[#1e1e2e] px-2 py-0.5 rounded font-mono">
-                              ⏱️ {sentimentResult.speechPaceTip}
-                            </span>
-                          )}
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Input invisible pour l'upload rapide d'un fichier audio */}
+                    <input
+                      ref={backingInputRef}
+                      type="file"
+                      accept="audio/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const url = URL.createObjectURL(file);
+                        setActiveBackingTrack({
+                          url,
+                          title: `📁 ${file.name.replace(/\.[^/.]+$/, "")}`,
+                          category: 'Fichier Personnel',
+                          icon: '📁'
+                        });
+                        showToast(`Fichier "${file.name}" chargé comme fond sonore !`, "success");
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+
+                  {/* Carte d'état de la piste active, pré-écoute et curseurs de mixage & pitch */}
+                  {activeBackingTrack && (
+                    <div className="bg-[#11111b] p-3 rounded-xl border border-[#fbbf24]/20 space-y-3 animate-fadeIn">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Disc className={`w-4 h-4 text-[#fbbf24] shrink-0 ${isBackingTrackPlaying ? 'animate-spin' : ''}`} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-[#f9e2af] truncate">
+                              {activeBackingTrack.title}
+                            </div>
+                            <div className="text-[10px] text-[#a6adc8]">
+                              {activeBackingTrack.category || 'Accompagnement'} • Boucle synchronisée
+                            </div>
+                          </div>
                         </div>
 
-                        {/* Explanation */}
-                        {sentimentResult.explanation && (
-                          <p className="text-[11px] text-[#a6adc8] leading-relaxed italic">
-                            "{sentimentResult.explanation}"
-                          </p>
-                        )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (backingAudioRef.current) {
+                                if (isBackingTrackPlaying) backingAudioRef.current.pause();
+                                else backingAudioRef.current.play().catch(() => {});
+                              }
+                            }}
+                            className="py-1 px-2.5 rounded-lg text-xs font-bold bg-[#d97706] text-[#1c0f04] hover:bg-[#fbbf24] transition-all flex items-center gap-1 shadow cursor-pointer"
+                          >
+                            {isBackingTrackPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+                            <span>{isBackingTrackPlaying ? 'Pause Fond' : 'Écouter Fond'}</span>
+                          </button>
 
-                        {/* Suggestion Action Bar */}
-                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#313244]">
-                          <div className="text-[11px] truncate text-[#cdd6f4]">
-                            <span className="text-[#a6adc8]">Style conseillé : </span>
-                            <strong className="text-[#89b4fa]">{sentimentResult.suggestedStyleLabel}</strong>
-                            <span className="text-[10px] text-[#6c7086] ml-1">({sentimentResult.suggestedDomain.toUpperCase()})</span>
-                          </div>
+                          {/* Bouton de mix instantané en temps réel (0ms) */}
+                          <button
+                            type="button"
+                            onClick={handlePreviewMix}
+                            disabled={!currentAudioUrl}
+                            className={`py-1 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 shadow cursor-pointer ${
+                              isLiveMixPlaying
+                                ? 'bg-[#fbbf24] text-[#1c0f04]'
+                                : 'bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b]'
+                            }`}
+                            title="Lancer ou mettre en pause l'écoute mixée instantanée de la voix et du fond sonore"
+                          >
+                            {isLiveMixPlaying ? <Pause className="w-3 h-3" /> : <Sliders className="w-3 h-3" />}
+                            <span>{isLiveMixPlaying ? 'Pause Mix' : '⚡ Mixer Voix + Fond'}</span>
+                          </button>
+
+                          {/* Bouton pour fusionner et enregistrer le mix définitif dans la bibliothèque */}
+                          <button
+                            type="button"
+                            onClick={handleMixAndRecordFinal}
+                            disabled={isMixingFinal || !currentAudioBlob}
+                            className="py-1 px-2.5 rounded-lg text-xs font-bold bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] border border-[#a6e3a1]/40 transition-all flex items-center gap-1 shadow cursor-pointer disabled:opacity-50"
+                            title="Calculer et fusionner le fichier audio mixé final dans la bibliothèque"
+                          >
+                            {isMixingFinal ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                            <span>Fusionner Mix</span>
+                          </button>
 
                           <button
                             type="button"
-                            onClick={() => applySentimentSuggestion(sentimentResult)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
-                              appliedSentimentTimestamp
-                                ? 'bg-[#a6e3a1] text-[#11111b] shadow-md'
-                                : style === sentimentResult.suggestedStyleVal && domain === sentimentResult.suggestedDomain
-                                  ? 'bg-[#313244] text-[#a6e3a1] border border-[#a6e3a1]/40'
-                                  : 'bg-gradient-to-r from-[#89b4fa] to-[#b4befe] text-[#11111b] hover:opacity-90 shadow-sm'
-                            }`}
+                            onClick={() => {
+                              if (backingAudioRef.current) backingAudioRef.current.pause();
+                              setActiveBackingTrack(null);
+                              setIsBackingTrackPlaying(false);
+                              if (isLiveMixPlaying) setIsLiveMixPlaying(false);
+                              showToast("Fond sonore retiré.", "info");
+                            }}
+                            className="p-1 rounded-lg text-red-400 hover:bg-red-500/20 transition-all text-xs cursor-pointer"
+                            title="Désactiver le fond sonore"
                           >
-                            {appliedSentimentTimestamp ? (
-                              <>
-                                <Check className="w-3.5 h-3.5" />
-                                <span>Style Appliqué !</span>
-                              </>
-                            ) : style === sentimentResult.suggestedStyleVal && domain === sentimentResult.suggestedDomain ? (
-                              <>
-                                <Check className="w-3.5 h-3.5" />
-                                <span>Style Actif</span>
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="w-3.5 h-3.5" />
-                                <span>Adopter ce style</span>
-                              </>
-                            )}
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <div className="text-[11px] text-[#a6adc8] flex items-center justify-center py-1">
-                        Saisie en cours... L'IA optimise les nuances et l'intonation.
+
+                      {/* Sliders temps réel : Volume Voix, Volume Fond Sonore, et Pitch (Hauteur) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 border-t border-[#313244]/50">
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#a6adc8] mb-1">
+                            <span>🎙️ Volume Voix :</span>
+                            <span className="font-mono font-bold text-[#89b4fa]">{Math.round(voiceVolume * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={Math.max(0, Math.min(1, voiceVolume))}
+                            onChange={(e) => setVoiceVolume(parseFloat(e.target.value))}
+                            className="w-full accent-[#89b4fa]"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#a6adc8] mb-1">
+                            <span>🥁 Volume Fond :</span>
+                            <span className="font-mono font-bold text-[#fbbf24]">{Math.round(backingVolume * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={Math.max(0, Math.min(1, backingVolume))}
+                            onChange={(e) => setBackingVolume(parseFloat(e.target.value))}
+                            className="w-full accent-[#fbbf24]"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#a6adc8] mb-1">
+                            <span>🎚️ Pitch (Hauteur) :</span>
+                            <span className="font-mono font-bold text-[#cba6f7]">
+                              {voicePitch === 1.0 ? '1.0x (Neutre)' : `${voicePitch > 1.0 ? '+' : ''}${Math.round((voicePitch - 1) * 100)}% (${voicePitch.toFixed(2)}x)`}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.70}
+                            max={1.30}
+                            step={0.02}
+                            value={voicePitch}
+                            onChange={(e) => setVoicePitch(parseFloat(e.target.value))}
+                            className="w-full accent-[#cba6f7]"
+                          />
+                        </div>
                       </div>
+
+                      {/* Option Crossfade Automatique Rapide */}
+                      <div className="flex items-center justify-between pt-2 border-t border-[#313244]/50 text-[11px]">
+                        <div className="flex items-center gap-1.5 text-[#a6adc8]">
+                          <Waves className={`w-3.5 h-3.5 ${enableCrossfade ? 'text-[#a6e3a1]' : 'text-[#6c7086]'}`} />
+                          <span className="font-medium">Crossfade automatique ({crossfadeDuration.toFixed(1)}s) :</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setEnableCrossfade(!enableCrossfade)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                              enableCrossfade
+                                ? 'bg-[#a6e3a1]/20 text-[#a6e3a1] border border-[#a6e3a1]/40'
+                                : 'bg-[#313244] text-[#a6adc8] hover:text-white'
+                            }`}
+                          >
+                            {enableCrossfade ? '✓ Activé' : 'Désactivé'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Barre de commandes épurée : Écouter, Enregistrer, Mixer, + Importer */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-0.5">
+                  {/* Bouton Écouter */}
+                  <button
+                    type="button"
+                    onClick={handlePreview}
+                    disabled={isGenerating || !text.trim()}
+                    className="py-2.5 px-3 rounded-xl bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] font-bold text-xs shadow-md transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                    title="Écouter l'aperçu vocal"
+                  >
+                    {isGenerating ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Génération...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Écouter</span>
+                      </>
                     )}
+                  </button>
+
+                  {/* Bouton Enregistrer */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!currentAudioUrl && !text.trim()) {
+                        showToast("Saisissez d'abord du texte ou générez un audio avant d'enregistrer.", "error");
+                        return;
+                      }
+                      setShowSaveSection(prev => !prev);
+                    }}
+                    disabled={!text.trim() && !currentAudioUrl}
+                    className={`py-2.5 px-3 rounded-xl font-bold text-xs shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 ${
+                      showSaveSection
+                        ? 'bg-[#a6e3a1] text-[#11111b]'
+                        : 'bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] border border-[#a6e3a1]/30'
+                    }`}
+                    title="Enregistrer dans la bibliothèque"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Enregistrer</span>
+                  </button>
+
+                  {/* Bouton Fond Sonore & Mixage */}
+                  <button
+                    type="button"
+                    onClick={() => setShowMixer(prev => !prev)}
+                    className={`py-2.5 px-3 rounded-xl font-bold text-xs shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 border ${
+                      showMixer || activeBackingTrack
+                        ? 'bg-gradient-to-r from-[#d97706] to-[#fbbf24] text-[#1c0f04] border-[#fbbf24]'
+                        : 'bg-[#313244] hover:bg-[#45475a] text-[#fbbf24] border-[#fbbf24]/30'
+                    }`}
+                    title="Ouvrir le studio de composition, de choix du fond sonore et de mixage"
+                  >
+                    <Music className="w-3.5 h-3.5" />
+                    <span>{activeBackingTrack ? '🎵 Fond Actif' : '🎵 Fond Sonore & Mixage'}</span>
+                    {activeBackingTrack && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
+                    )}
+                  </button>
+
+                  {/* Bouton + Importer */}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="py-2.5 px-3 rounded-xl bg-[#313244] hover:bg-[#45475a] text-[#cdd6f4] hover:text-[#89b4fa] font-bold text-xs border border-[#45475a] hover:border-[#89b4fa]/50 shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                    title="Importer un fichier texte (.txt, .md) ou audio"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-[#89b4fa]" />
+                    <span>+ Importer</span>
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".txt,.md,.text,audio/*"
+                    className="hidden"
+                    onChange={handleImportFile}
+                  />
+                </div>
+
+                {statusMsg && (
+                  <div className="text-xs text-center text-[#a6adc8] italic">
+                    {statusMsg}
                   </div>
                 )}
 
-                <button
-                  onClick={handlePreview}
-                  disabled={isGenerating || !text.trim()}
-                  className="w-full py-3 rounded-xl bg-[#89b4fa] text-[#11111b] font-bold text-sm shadow-md hover:bg-[#b4befe] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {isGenerating ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Génération en cours (Studio RidiaLArt-Vision)...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Volume2 className="w-4 h-4" />
-                      <span>🔊 Écouter l'aperçu (Gemini TTS)</span>
-                    </>
-                  )}
-                </button>
+                {/* Panneau d'enregistrement dans la bibliothèque */}
+                {showSaveSection && (
+                  <div className="p-4 rounded-xl bg-[#181825] border border-[#a6e3a1]/40 space-y-3 animate-fadeIn shadow-lg">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#a6e3a1]">
+                      <span className="flex items-center gap-1.5"><Save className="w-4 h-4" /> Enregistrer dans la Bibliothèque</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowSaveSection(false)}
+                        className="text-[#a6adc8] hover:text-white"
+                      >
+                        ✕
+                      </button>
+                    </div>
 
-                <div className="text-xs text-center text-[#a6adc8]">
-                  {statusMsg}
-                </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">Nom du fichier / piste :</label>
+                      <input
+                        type="text"
+                        value={saveTitle}
+                        onChange={(e) => setSaveTitle(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#a6e3a1]"
+                      />
+                    </div>
 
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">Dossier / Projet cible :</label>
+                      <select
+                        value={selectedProject}
+                        onChange={(e) => setSelectedProject(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-xs"
+                      >
+                        {Object.keys(library).map(proj => (
+                          <option key={proj} value={proj}>{proj}</option>
+                        ))}
+                        <option value="__NEW__">+ Créer un nouveau projet...</option>
+                      </select>
+
+                      {selectedProject === '__NEW__' && (
+                        <input
+                          type="text"
+                          value={newProjectName}
+                          onChange={(e) => setNewProjectName(e.target.value)}
+                          placeholder="Nom du nouveau projet..."
+                          className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-xs mt-2"
+                        />
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleSaveToLibrary}
+                      className="w-full py-2.5 rounded-xl bg-[#a6e3a1] text-[#11111b] font-bold text-xs text-center shadow hover:opacity-90 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Confirmer l'enregistrement (Studio RidiaLArt-Vision)</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Lecteur Audio, Synesthésie Plastique & Découpe */}
                 {currentAudioUrl && (
-                  <div className="pt-3 space-y-4">
+                  <div className="pt-2 space-y-3 animate-fadeIn">
                     <audio
                       ref={audioRef}
                       controls
                       className={`w-full ${themeMode === 'ridialart' ? 'accent-[#fbbf24]' : 'accent-[#89b4fa]'}`}
                       src={currentAudioUrl}
                       onPlay={() => setIsAudioPlaying(true)}
-                      onPause={() => setIsAudioPlaying(false)}
-                      onEnded={() => setIsAudioPlaying(false)}
+                      onPause={() => {
+                        setIsAudioPlaying(false);
+                        if (isLiveMixPlaying) {
+                          if (backingAudioRef.current) backingAudioRef.current.pause();
+                          setIsBackingTrackPlaying(false);
+                          setIsLiveMixPlaying(false);
+                        }
+                      }}
+                      onEnded={() => {
+                        setIsAudioPlaying(false);
+                        if (isLiveMixPlaying) {
+                          if (backingAudioRef.current) backingAudioRef.current.pause();
+                          setIsBackingTrackPlaying(false);
+                          setIsLiveMixPlaying(false);
+                        }
+                      }}
                     />
 
                     {/* RIDIALART PLASTIC SYNESTHESIA CANVAS */}
@@ -1791,15 +3115,15 @@ ${item.text}`;
                     )}
 
                     {/* TRIMMER RANGE SLIDER UI */}
-                    <div className="bg-[#313244]/60 p-4 rounded-xl border border-[#45475a] space-y-3">
+                    <div className="bg-[#313244]/60 p-3.5 rounded-xl border border-[#45475a] space-y-2.5">
                       <div className="flex items-center justify-between text-xs font-semibold text-[#89b4fa]">
-                        <span className="flex items-center gap-1.5"><Scissors className="w-4 h-4" /> Découpe & Suppression des silences</span>
-                        <span className="tabular-nums">{formatTimeDisplay(startTime)} — {formatTimeDisplay(endTime)} (sur {formatTimeDisplay(audioDuration)})</span>
+                        <span className="flex items-center gap-1.5"><Scissors className="w-3.5 h-3.5" /> Découpe & Silences</span>
+                        <span className="tabular-nums text-[11px] text-[#a6adc8]">{formatTimeDisplay(startTime)} — {formatTimeDisplay(endTime)} / {formatTimeDisplay(audioDuration)}</span>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <div className="flex justify-between text-[11px] text-[#a6adc8] mb-1">
+                          <div className="flex justify-between text-[10px] text-[#a6adc8] mb-1">
                             <span>Début : {formatTimeDisplay(startTime)}</span>
                           </div>
                           <input
@@ -1817,7 +3141,7 @@ ${item.text}`;
                         </div>
 
                         <div>
-                          <div className="flex justify-between text-[11px] text-[#a6adc8] mb-1">
+                          <div className="flex justify-between text-[10px] text-[#a6adc8] mb-1">
                             <span>Fin : {formatTimeDisplay(endTime)}</span>
                           </div>
                           <input
@@ -1836,56 +3160,186 @@ ${item.text}`;
                       </div>
 
                       <button
+                        type="button"
                         onClick={playTrimmedSelection}
-                        className="w-full py-2 rounded-lg bg-[#313244] border border-[#89b4fa] text-[#89b4fa] text-xs font-bold hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
+                        className="w-full py-1.5 rounded-lg bg-[#313244] border border-[#89b4fa]/50 text-[#89b4fa] text-xs font-bold hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
                       >
                         ▶️ Écouter la sélection rognée
                       </button>
                     </div>
+
+                    {/* SECTION: Téléchargement & Partage Réseaux Sociaux */}
+                    <div className="bg-[#181825] p-4 rounded-xl border border-[#89b4fa]/30 space-y-3 shadow-lg">
+                      <div className="flex items-center justify-between text-xs font-bold text-[#89b4fa]">
+                        <span className="flex items-center gap-1.5"><Download className="w-4 h-4 text-[#89b4fa]" /> Téléchargement & Partage Direct</span>
+                        <span className="text-[10px] bg-[#313244] px-2 py-0.5 rounded-full text-[#a6adc8]">MP3 / WAV / Réseaux</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAudioFile('mp3')}
+                          className="py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span>📥 Télécharger (.mp3)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAudioFile('wav')}
+                          className="py-2.5 px-3 rounded-xl bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] border border-[#89b4fa]/40 font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span>📥 Télécharger (.wav)</span>
+                        </button>
+                      </div>
+
+                      <div className="pt-2 border-t border-[#45475a]/60 space-y-2">
+                        <div className="text-[11px] font-semibold text-[#a6adc8] flex items-center gap-1">
+                          <Share2 className="w-3.5 h-3.5 text-[#fbbf24]" /> Partager sur les réseaux sociaux :
+                        </div>
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('whatsapp')}
+                            className="py-2 px-2 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold hover:bg-emerald-950 transition-all flex items-center justify-center gap-1"
+                            title="WhatsApp"
+                          >
+                            <span>💬 WhatsApp</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('twitter')}
+                            className="py-2 px-2 rounded-lg bg-blue-950/60 border border-blue-500/40 text-blue-200 text-[11px] font-bold hover:bg-blue-950 transition-all flex items-center justify-center gap-1"
+                            title="X / Twitter"
+                          >
+                            <span>🐦 X</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('facebook')}
+                            className="py-2 px-2 rounded-lg bg-indigo-950/60 border border-indigo-500/40 text-indigo-200 text-[11px] font-bold hover:bg-indigo-950 transition-all flex items-center justify-center gap-1"
+                            title="Facebook"
+                          >
+                            <span>📘 Facebook</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('linkedin')}
+                            className="py-2 px-2 rounded-lg bg-sky-950/60 border border-sky-500/40 text-sky-200 text-[11px] font-bold hover:bg-sky-950 transition-all flex items-center justify-center gap-1"
+                            title="LinkedIn"
+                          >
+                            <span>🔗 LinkedIn</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('telegram')}
+                            className="py-2 px-2 rounded-lg bg-cyan-950/60 border border-cyan-500/40 text-cyan-200 text-[11px] font-bold hover:bg-cyan-950 transition-all flex items-center justify-center gap-1"
+                            title="Telegram"
+                          >
+                            <span>✈️ Telegram</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleShareSocial('native')}
+                            className="py-2 px-2 rounded-lg bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-[11px] font-bold hover:bg-[#45475a] transition-all flex items-center justify-center gap-1"
+                            title="Partager via l'appareil"
+                          >
+                            <span>📤 Partager</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
 
-                {showSaveSection && currentAudioUrl && (
-                  <div className="mt-4 pt-4 border-t border-[#313244] space-y-3 animate-fadeIn">
-                    <label className="block text-xs font-semibold text-[#a6adc8]">Nom du fichier audio :</label>
-                    <input
-                      type="text"
-                      value={saveTitle}
-                      onChange={(e) => setSaveTitle(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm"
-                    />
+                {/* STUDIO DE FOND SONORE & MIXAGE (COMPOSITION, PRESETS, BIBLIO, PITCH, MIX) */}
+                {showMixer && (
+                  <BackgroundMusicStudio
+                    activeBackingTrack={activeBackingTrack}
+                    setActiveBackingTrack={setActiveBackingTrack}
+                    voiceVolume={voiceVolume}
+                    setVoiceVolume={setVoiceVolume}
+                    backingVolume={backingVolume}
+                    setBackingVolume={setBackingVolume}
+                    voicePitch={voicePitch}
+                    setVoicePitch={setVoicePitch}
+                    enableCrossfade={enableCrossfade}
+                    setEnableCrossfade={setEnableCrossfade}
+                    crossfadeDuration={crossfadeDuration}
+                    setCrossfadeDuration={setCrossfadeDuration}
+                    currentAudioBlob={currentAudioBlob}
+                    onPreviewMix={handlePreviewMix}
+                    isPreviewingMix={isPreviewingMix}
+                    onMixAndRecordFinal={handleMixAndRecordFinal}
+                    isMixingFinal={isMixingFinal}
+                    previewMixUrl={previewMixUrl}
+                    isPreviewPlaying={isPreviewPlaying}
+                    onTogglePreviewPlay={handleTogglePreviewPlay}
+                    onStopPreview={handleStopPreview}
+                    library={library}
+                    onOpenRhythmStudio={() => setCurrentView('rhythm_studio')}
+                    showToast={showToast}
+                    onClose={() => setShowMixer(false)}
+                  />
+                )}
 
-                    <label className="block text-xs font-semibold text-[#a6adc8]">Choisir ou créer un projet :</label>
-                    <select
-                      value={selectedProject}
-                      onChange={(e) => setSelectedProject(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm"
-                    >
-                      {Object.keys(library).map(proj => (
-                        <option key={proj} value={proj}>{proj}</option>
-                      ))}
-                      <option value="__NEW__">+ Créer un nouveau projet...</option>
-                    </select>
-
-                    {selectedProject === '__NEW__' && (
-                      <input
-                        type="text"
-                        value={newProjectName}
-                        onChange={(e) => setNewProjectName(e.target.value)}
-                        placeholder="Nom du nouveau projet..."
-                        className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm mt-2"
+                {/* Barre récapitulative compacte du fond sonore actif lorsque le panneau est fermé */}
+                {activeBackingTrack && !showMixer && (
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-[#181825] border border-[#fbbf24]/30 text-xs shadow-md animate-fadeIn">
+                    <div className="flex items-center gap-2.5 truncate">
+                      <Disc className={`w-4 h-4 text-[#fbbf24] shrink-0 ${isBackingTrackPlaying ? 'animate-spin' : ''}`} />
+                      <div className="truncate">
+                        <span className="text-[#a6adc8] text-[11px] block sm:inline mr-1">Fond sonore actif :</span>
+                        <span className="text-[#f9e2af] font-bold truncate">{activeBackingTrack.title}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <audio
+                        ref={backingAudioRef}
+                        src={activeBackingTrack.url}
+                        loop
+                        onPlay={() => setIsBackingTrackPlaying(true)}
+                        onPause={() => setIsBackingTrackPlaying(false)}
+                        className="hidden"
                       />
-                    )}
-
-                    <button
-                      onClick={handleSaveToLibrary}
-                      className="w-full py-3 rounded-xl bg-[#a6e3a1] text-[#11111b] font-bold text-sm text-center shadow-lg hover:opacity-90 transition-all"
-                    >
-                      💾 Enregistrer dans la Bibliothèque VoxArt
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (backingAudioRef.current) {
+                            if (isBackingTrackPlaying) backingAudioRef.current.pause();
+                            else backingAudioRef.current.play().catch(() => {});
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold bg-[#d97706] text-[#1c0f04] hover:bg-[#fbbf24] transition-all flex items-center gap-1 shadow"
+                      >
+                        {isBackingTrackPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+                        <span>{isBackingTrackPlaying ? 'Pause' : 'Écouter'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowMixer(true)}
+                        className="py-1 px-2.5 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#fbbf24] font-bold text-xs transition-all border border-[#fbbf24]/30"
+                      >
+                        🎛️ Mixer / Changer
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (backingAudioRef.current) backingAudioRef.current.pause();
+                          setActiveBackingTrack(null);
+                          setIsBackingTrackPlaying(false);
+                          showToast("Fond sonore retiré.", "info");
+                        }}
+                        className="p-1 text-red-400 hover:bg-red-500/20 rounded-lg text-xs"
+                        title="Retirer le fond sonore"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 )}
-              </>
+              </div>
             ) : (
               /* BATCH PROCESSING MODE */
               <div className="space-y-4 animate-fadeIn">
@@ -1927,6 +3381,18 @@ ${item.text}`;
                         </select>
                       )}
                     </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-[#45475a]/40">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#cdd6f4]">
+                      <input
+                        type="checkbox"
+                        checked={batchCompressMp3}
+                        onChange={(e) => setBatchCompressMp3(e.target.checked)}
+                        className="w-4 h-4 rounded accent-[#89b4fa]"
+                      />
+                      <span>🗜️ Optimiser & Compresser les clips MP3 dans la Bibliothèque (Réduction taille ~50-70%)</span>
+                    </label>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-[#45475a]/40">
@@ -2340,7 +3806,24 @@ ${item.text}`;
                 ⬅️ Retour à l'accueil
               </button>
 
-              <div className="w-full sm:w-auto">
+              <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+                <button
+                  onClick={() => {
+                    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(library, null, 2));
+                    const downloadAnchor = document.createElement('a');
+                    downloadAnchor.setAttribute("href", dataStr);
+                    downloadAnchor.setAttribute("download", `voxart_database_backup_${new Date().toISOString().slice(0,10)}.json`);
+                    document.body.appendChild(downloadAnchor);
+                    downloadAnchor.click();
+                    downloadAnchor.remove();
+                    showToast("Base de données téléchargée avec succès sur votre appareil !", "success");
+                  }}
+                  className="w-full sm:w-auto py-2 px-4 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-500 transition-all flex items-center justify-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>💾 Télécharger la base (JSON)</span>
+                </button>
+
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -2353,7 +3836,7 @@ ${item.text}`;
                   className="w-full sm:w-auto py-2 px-4 rounded-xl bg-[#fab387] text-[#11111b] font-bold text-xs hover:opacity-90 transition-all flex items-center justify-center gap-1.5"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>📥 Importer un projet (.json)</span>
+                  <span>📥 Importer (.json)</span>
                 </button>
               </div>
             </div>
@@ -2687,6 +4170,70 @@ ${item.text}`;
                           })
                         )}
                       </div>
+
+                      {/* Videos (Google Flow / Veo 9:16) */}
+                      <div className="space-y-1.5 pt-2 border-t border-[#45475a]/40">
+                        <div className="flex items-center justify-between pb-1">
+                          <div className="text-xs font-semibold text-[#89b4fa] flex items-center gap-1.5">
+                            <span>🎞️ Séquences Vidéo 9:16 (Google Flow / Veo) :</span>
+                          </div>
+                          <label className="px-2.5 py-1 rounded bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] text-[11px] font-bold cursor-pointer flex items-center gap-1 shadow-sm transition-all">
+                            <span>+ Importer Vidéo</span>
+                            <input
+                              type="file"
+                              accept="video/mp4,video/webm,video/*"
+                              onChange={(e) => handleVideoUpload(proj, e)}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                        {(!pData.videos || pData.videos.length === 0) ? (
+                          <div className="text-[11px] text-[#6c7086] italic py-1">
+                            Aucune vidéo importée. Générez un clip 9:16 sur Google Flow et importez-le ici.
+                          </div>
+                        ) : (
+                          pData.videos.map((vid, idx) => (
+                            <div key={vid.id} className="flex items-center justify-between p-2 rounded-lg text-xs bg-[#1e1e2e] border border-[#313244]">
+                              <div className="flex items-center gap-2 truncate max-w-[140px] sm:max-w-[210px]">
+                                <span>📱</span>
+                                <span className="truncate font-medium text-[#cdd6f4]" title={vid.name}>
+                                  {vid.name}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveVideoModal({ url: vid.data, title: vid.name })}
+                                  className="px-2.5 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white rounded text-[11px] font-bold flex items-center gap-1 shadow-sm"
+                                  title="Lire en format vertical 9:16"
+                                >
+                                  ▶️ Regarder
+                                </button>
+                                <a
+                                  href={vid.data}
+                                  download={`${vid.name}.mp4`}
+                                  className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] rounded text-[11px]"
+                                  title="Télécharger"
+                                >
+                                  ⬇️
+                                </a>
+                                <button
+                                  onClick={() => {
+                                    const updated = { ...library };
+                                    updated[proj].videos?.splice(idx, 1);
+                                    saveLibraryToStorage(updated);
+                                    showToast("Vidéo supprimée.", "info");
+                                  }}
+                                  className="p-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                                  title="Supprimer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   );
                 })
@@ -2734,18 +4281,41 @@ ${item.text}`;
               />
             </div>
 
-            <div className="space-y-1 mt-3">
-              <label className="block text-xs font-semibold text-[#a6adc8]">Clé API Google Gemini :</label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  localStorage.setItem('voxart_key', e.target.value);
-                }}
-                placeholder="Collez votre clé API AI Studio"
-                className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm"
-              />
+            <div className="space-y-1.5 mt-3 p-3 bg-[#1e1e2e]/80 rounded-xl border border-[#45475a]/50">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold text-[#89b4fa]">🔑 Clé API Google AI Studio :</label>
+                {apiKey ? (
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-medium">✓ Clé active</span>
+                ) : (
+                  <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-medium">Optionnelle (par défaut)</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => {
+                    const clean = e.target.value;
+                    setApiKey(clean);
+                  }}
+                  placeholder="Collez votre clé API Gemini (ex: AIzaSy... ou AQ...)"
+                  className="flex-1 p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm focus:outline-none focus:border-[#89b4fa]"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const clean = apiKey.trim();
+                    setApiKey(clean);
+                    showToast(clean ? "✓ Clé API synchronisée avec succès !" : "Clé API réinitialisée (clé du système active).", "success");
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] font-bold text-xs shadow transition-all shrink-0 cursor-pointer"
+                >
+                  Enregistrer
+                </button>
+              </div>
+              <p className="text-[11px] text-[#a6adc8] leading-relaxed">
+                Vous pouvez intégrer ici la clé API de votre compte <a href="https://aistudio.google.com" target="_blank" rel="noreferrer" className="text-[#89b4fa] underline hover:text-[#b4befe]">Google AI Studio</a> pour utiliser vos propres quotas sur l'assistant vocal, les analyses multimédias et les prompts 9:16.
+              </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
@@ -2846,6 +4416,53 @@ ${item.text}`;
               </div>
             )}
 
+            {/* PRÉRÉGLAGE DE SYNTHÈSE AUDIO PAR DÉFAUT */}
+            <div className="bg-[#181825] p-4 rounded-xl border border-[#fbbf24]/30 space-y-3 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Bookmark className="w-4 h-4 text-[#fbbf24]" />
+                  <span className="text-xs font-bold text-[#f9e2af]">Préréglage de Synthèse par Défaut à l'Ouverture</span>
+                </div>
+                {hasCustomDefaultPreset && (
+                  <span className="text-[10px] bg-[#fbbf24]/20 text-[#fbbf24] px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1">
+                    <Check className="w-2.5 h-2.5" /> Personnalisé actif
+                  </span>
+                )}
+              </div>
+              
+              <p className="text-[11px] text-[#a6adc8] leading-relaxed">
+                Enregistrez vos paramètres actuels (Langue : <strong className="text-white">{language}</strong>, Voix : <strong className="text-white">{voiceName}</strong>, Modèle : <strong className="text-white">{model}</strong>, Timbre : <strong className="text-white">{genderText}</strong>, Pitch : <strong className="text-white">{voicePitch.toFixed(2)}x</strong>). Ils seront automatiquement restaurés par défaut à chaque lancement de l'application.
+              </p>
+
+              {defaultPresetInfo && (
+                <div className="text-[10px] text-[#a6adc8] font-mono italic">
+                  Dernier enregistrement : {defaultPresetInfo}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleSaveDefaultPreset}
+                  className="py-2 px-3 rounded-lg bg-gradient-to-r from-[#d97706] to-[#fbbf24] text-[#1c0f04] font-bold text-xs flex items-center justify-center gap-1.5 shadow hover:opacity-90 transition-all cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Enregistrer ces réglages par défaut</span>
+                </button>
+
+                {hasCustomDefaultPreset && (
+                  <button
+                    type="button"
+                    onClick={handleResetDefaultPreset}
+                    className="py-2 px-3 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#f38ba8] border border-[#f38ba8]/30 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Rétablir valeurs d'usine</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="bg-[#313244] p-3 rounded-xl space-y-2">
               <label className="block text-xs font-semibold text-[#a6adc8]">Test rapide des réglages :</label>
               <button
@@ -2870,10 +4487,15 @@ ${item.text}`;
           </div>
         )}
 
+        {/* KNOWLEDGE BASE VIEW */}
+        {currentView === 'knowledge_base' && (
+          <KnowledgeBaseManager apiKey={apiKey} addToast={showToast} />
+        )}
+
       </main>
 
       {/* Toast Notifications */}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+      <div className="fixed top-20 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
         {toasts.map(toast => (
           <div
             key={toast.id}
@@ -2950,8 +4572,58 @@ ${item.text}`;
         </div>
       )}
 
+      {/* 9:16 Vertical Video Preview Modal */}
+      {activeVideoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fadeIn">
+          <div className="w-full max-w-sm rounded-3xl bg-[#1e1e2e] border border-[#45475a] p-5 shadow-2xl relative text-[#cdd6f4] flex flex-col items-center">
+            <button
+              onClick={() => setActiveVideoModal(null)}
+              className="absolute top-4 right-4 p-2 rounded-xl text-[#a6adc8] hover:text-white hover:bg-[#313244] transition-all z-10"
+              title="Fermer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="text-sm font-bold text-[#89b4fa] mb-3 truncate max-w-[260px]">
+              📱 {activeVideoModal.title}
+            </div>
+            {/* 9:16 Vertical Container */}
+            <div className="relative w-full aspect-[9/16] max-h-[70vh] bg-black rounded-2xl overflow-hidden shadow-2xl border-2 border-[#89b4fa]/40 flex items-center justify-center">
+              <video
+                src={activeVideoModal.url}
+                controls
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div className="mt-4 w-full flex gap-2">
+              <a
+                href={activeVideoModal.url}
+                download={`${activeVideoModal.title}.mp4`}
+                className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-xs font-bold text-white text-center hover:opacity-90 shadow-md transition-all flex items-center justify-center gap-1.5"
+              >
+                <Download className="w-4 h-4" />
+                <span>Télécharger (.mp4)</span>
+              </a>
+              <button
+                onClick={() => setActiveVideoModal(null)}
+                className="py-2.5 px-4 rounded-xl bg-[#313244] hover:bg-[#45475a] text-xs font-bold text-[#cdd6f4]"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* AI Agent Chat Widget */}
-      <AIAgentChat currentText={text} apiKey={apiKey} addToast={showToast} />
+      <AIAgentChat 
+        currentText={text} 
+        apiKey={apiKey} 
+        onOpenSettings={() => setCurrentView('settings')} 
+        addToast={showToast} 
+        onTransferToVocalStudio={handleTransferFromAgent}
+      />
     </div>
   );
 }

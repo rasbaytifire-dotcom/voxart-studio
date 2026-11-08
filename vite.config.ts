@@ -17,9 +17,9 @@ export default defineConfig(() => {
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
           id: '/',
-          name: 'VoxStudio — AI Text-to-Audio PWA',
-          short_name: 'VoxStudio',
-          description: 'Professional AI Text-to-Audio Studio powered by Google Gemini',
+          name: 'VoxArt — Studio RidiaLArt-Vision',
+          short_name: 'VoxArt',
+          description: 'Studio professionnel de synthèse vocale par IA text-to-speech propulsé par Google Gemini avec gestion de scripts, rythmes africains et projets.',
           theme_color: '#1e1e2e',
           background_color: '#181825',
           display: 'standalone',
@@ -46,6 +46,9 @@ export default defineConfig(() => {
             },
           ],
         },
+        workbox: {
+          maximumFileSizeToCacheInBytes: 5000000,
+        },
         devOptions: {
           enabled: true,
           type: 'module',
@@ -56,6 +59,10 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+      dedupe: ['react', 'react-dom'],
+    },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'lucide-react'],
     },
     server: {
       allowedHosts: true as const,
