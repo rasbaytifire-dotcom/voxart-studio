@@ -31,23 +31,27 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Configure Android SDK & Licenses
+      - name: Configure Android SDK, Licenses & Keystore
         run: |
           SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           if [ -z "$SDK_DIR" ] || [ ! -d "$SDK_DIR" ]; then
             SDK_DIR="/usr/local/lib/android/sdk"
           fi
           echo "SDK_DIR=$SDK_DIR"
-          ls -la "$SDK_DIR/platforms" 2>/dev/null || true
           echo "sdk.dir=$SDK_DIR" > android/local.properties
-          SDKMGR=$(find "$SDK_DIR" -name "sdkmanager" 2>/dev/null | head -n 1 || true)
+          SDKMGR=$(find "$SDK_DIR" -name "sdkmanager" -type f 2>/dev/null | head -n 1 || true)
           if [ -n "$SDKMGR" ]; then
-            echo "Found sdkmanager: $SDKMGR"
             yes | sudo "$SDKMGR" --sdk_root="$SDK_DIR" --licenses > /dev/null 2>&1 || true
             if [ ! -d "$SDK_DIR/platforms/android-34" ]; then
               sudo "$SDKMGR" --sdk_root="$SDK_DIR" "platforms;android-34" "build-tools;34.0.0" || true
             fi
           fi
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.android" 2>/dev/null || true
+          rm -f android/app/voxart-debug.keystore
+          keytool -genkeypair -v -keystore android/app/voxart-debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=VoxArt Studio,O=RidiaLArt,C=SN"
 
       - name: Build APK with Gradle
         working-directory: ./android
