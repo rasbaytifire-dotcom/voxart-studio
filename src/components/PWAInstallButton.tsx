@@ -240,7 +240,7 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
                   </span>
                 </div>
                 <p className="text-[11px] text-[#cdd6f4] leading-relaxed">
-                  Le workflow CI/CD <code className="text-[#89b4fa]">.github/workflows/build-apk.yml</code> compile automatiquement votre APK sur les serveurs cloud de GitHub avec le SDK Android officiel.
+                  Le workflow CI/CD <code className="text-[#89b4fa]">.github/workflows/android-apk.yml</code> compile automatiquement votre APK sur les serveurs cloud de GitHub avec le SDK Android officiel.
                 </p>
                 <div className="pt-1 flex flex-col sm:flex-row gap-2">
                   <a
