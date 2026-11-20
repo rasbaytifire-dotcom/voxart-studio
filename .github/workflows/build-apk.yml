@@ -31,15 +31,38 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Accept Android SDK Licenses
+      - name: Configure Android SDK & Licenses
         run: |
-          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "SDK_DIR=$SDK_DIR"
+          if [ -z "$SDK_DIR" ] || [ ! -d "$SDK_DIR" ]; then
+            SDK_DIR="/usr/local/lib/android/sdk"
+          fi
+          echo "sdk.dir=$SDK_DIR" > android/local.properties
+          SDKMGR=$(find "$SDK_DIR" -name "sdkmanager" -type f 2>/dev/null | head -n 1 || true)
+          if [ -n "$SDKMGR" ]; then
+            chmod +x "$SDKMGR"
+            yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+            "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
           fi
 
       - name: Build APK with Gradle
         working-directory: ./android
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee ../gradle-build.log
+
+      - name: Report Build Error Details
+        if: failure()
+        run: |
+          if [ -f gradle-build.log ]; then
+            echo "### Gradle Failure Log (tail)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 60 gradle-build.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            ERR_LINE=$(grep -E "FAILURE:|What went wrong:|Execution failed|error:" gradle-build.log | head -n 5 | tr '\n' ' ')
+            echo "::error title=Gradle Build Error::$ERR_LINE"
+          fi
 
       - name: Prepare APK File
         run: |
