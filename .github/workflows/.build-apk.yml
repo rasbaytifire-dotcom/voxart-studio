@@ -1,0 +1,28 @@
+name: Build VoxArt APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Installer Node.js et Java
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Installer Bubblewrap CLI
+        run: npm install -g @bubblewrap/cli
+
+      - name: Générer l'APK Android
+        run: |
+          mkdir app && cd app
+          yes "" | bubblewrap init --manifest="https://github.io" --name="VoxArt Studio" --packageId="sn.ridialart.voxart"
+          bubblewrap build
+
+      - name: Sauvegarder l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxart-studio-apk
+          path: app/app-release-signed.apk
