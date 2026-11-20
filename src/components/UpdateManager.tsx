@@ -268,12 +268,12 @@ export const UpdateSettingsSection: React.FC<{
         <div className="flex items-center justify-between text-[#a6adc8]">
           <span>📱 <strong>Format APK Android autonome :</strong></span>
           <a
-            href="https://github.com/rasbaytifire-dotcom/voxart-studio/actions"
+            href="https://github.com/rasbaytifire-dotcom/voxart-studio/releases/latest"
             target="_blank"
             rel="noopener noreferrer"
             className="text-amber-400 hover:text-amber-300 font-semibold underline flex items-center gap-1"
           >
-            Télécharger VoxArt.apk
+            Télécharger VoxArt-Studio.apk
           </a>
         </div>
         <p className="text-[10px] text-[#6c7086] leading-relaxed">

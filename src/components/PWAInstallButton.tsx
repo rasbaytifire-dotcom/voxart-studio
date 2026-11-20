@@ -242,16 +242,25 @@ export const PWAInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) 
                 <p className="text-[11px] text-[#cdd6f4] leading-relaxed">
                   Le workflow CI/CD <code className="text-[#89b4fa]">.github/workflows/build-apk.yml</code> compile automatiquement votre APK sur les serveurs cloud de GitHub avec le SDK Android officiel.
                 </p>
-                <div className="pt-1 flex flex-wrap gap-2">
+                <div className="pt-1 flex flex-col sm:flex-row gap-2">
                   <a
-                    href="https://github.com/rasbaytifire-dotcom/voxart-studio/actions"
+                    href="https://github.com/rasbaytifire-dotcom/voxart-studio/releases/latest"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-black font-bold text-xs shadow-md flex items-center justify-center gap-1.5 transition-all text-center"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Télécharger l'APK sur GitHub Actions</span>
-                    <ExternalLink className="w-3 h-3 ml-1" />
+                    <span>Télécharger l'APK (Releases)</span>
+                    <ExternalLink className="w-3 h-3 ml-0.5" />
+                  </a>
+                  <a
+                    href="https://github.com/rasbaytifire-dotcom/voxart-studio/actions"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2 px-3 rounded-xl bg-[#313244] hover:bg-[#45475a] text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                  >
+                    <span>Actions CI</span>
+                    <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
               </div>

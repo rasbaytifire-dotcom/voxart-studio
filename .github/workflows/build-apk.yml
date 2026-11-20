@@ -7,15 +7,9 @@ on:
       - 'android/**'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build Type (debug or release)'
-        required: true
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -31,19 +25,27 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
+
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Accept Android SDK Licenses
+        run: |
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
 
       - name: Build APK with Gradle
         working-directory: ./android
-        run: |
-          sudo apt-get update && sudo apt-get install -y gradle
-          gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Prepare APK Artifact
+      - name: Prepare APK File
         run: |
           mkdir -p output
-          find android/app/build/outputs/apk/ -name "*.apk" -exec cp {} output/VoxArt-Studio.apk \;
-          ls -la output/
+          cp android/app/build/outputs/apk/debug/app-debug.apk output/VoxArt-Studio.apk
+          ls -lh output/VoxArt-Studio.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -52,13 +54,12 @@ jobs:
           path: output/VoxArt-Studio.apk
           retention-days: 30
 
-      - name: Create Release and Upload APK
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v1
+      - name: Publish Direct Download in GitHub Releases
+        uses: softprops/action-gh-release@v2
         with:
           files: output/VoxArt-Studio.apk
-          name: VoxArt Studio APK Latest
-          tag_name: v1.0.${{ github.run_number }}
+          name: VoxArt Studio APK (v${{ github.run_number }})
+          tag_name: apk-v${{ github.run_number }}
           draft: false
           prerelease: false
           generate_release_notes: true
