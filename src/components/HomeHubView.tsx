@@ -15,6 +15,8 @@ import {
   ChevronRight,
   X,
   ArrowRight,
+  FileUp,
+  Smartphone,
 } from 'lucide-react';
 import studioLogo from '../assets/images/voxart_logo_1791875178885.jpg';
 import {
@@ -31,6 +33,10 @@ interface HomeHubViewProps {
   projectCount: number;
   hasDraftText: boolean;
   activeBackingTrackTitle?: string | null;
+  onOpenPhoneFilePicker?: () => void;
+  canInstallPWA?: boolean;
+  isPWAInstalled?: boolean;
+  onInstallPWA?: () => void;
 }
 
 const CategoryIcon: React.FC<{ name: HubCategoryItem['iconName']; className?: string }> = ({
@@ -87,6 +93,9 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
   projectCount,
   hasDraftText,
   activeBackingTrackTitle,
+  onOpenPhoneFilePicker,
+  canInstallPWA,
+  onInstallPWA,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<HubCategoryItem | null>(null);
 
@@ -125,6 +134,34 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Accès rapide : Fichier du téléphone + reprise + installation PWA */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        {onOpenPhoneFilePicker && (
+          <button
+            type="button"
+            onClick={onOpenPhoneFilePicker}
+            className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl bg-[#1e1e2e] border border-[#89b4fa]/40 hover:border-[#89b4fa] flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+          >
+            <span className="text-xs font-semibold text-[#cdd6f4] flex items-center gap-2 truncate">
+              <FileUp className="w-4 h-4 text-[#89b4fa] shrink-0" />
+              <span className="truncate">Importer un fichier du téléphone (vidéo, audio, script, SRT)</span>
+            </span>
+            <ArrowRight className="w-3.5 h-3.5 text-[#89b4fa] shrink-0" />
+          </button>
+        )}
+
+        {canInstallPWA && onInstallPWA && (
+          <button
+            type="button"
+            onClick={onInstallPWA}
+            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#a6e3a1]/15 border border-[#a6e3a1]/45 hover:bg-[#a6e3a1]/25 text-xs font-bold text-[#a6e3a1] flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shrink-0"
+          >
+            <Smartphone className="w-4 h-4 shrink-0" />
+            <span>Installer l’app (Partager / Ouvrir avec)</span>
+          </button>
+        )}
       </div>
 
       {/* Accès rapide de reprise (discret, 1 ligne max) */}

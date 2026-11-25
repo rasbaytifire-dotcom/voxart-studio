@@ -8,7 +8,7 @@ import {
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
   Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, ArrowLeft, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
-  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film
+  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film, Search, Smartphone
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -56,7 +56,7 @@ import { AfricanRhythmStudio } from './components/AfricanRhythmStudio';
 import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
 import { UnifiedStudioWorkspace } from './components/UnifiedStudioWorkspace';
 import { BackgroundMusicStudio } from './components/BackgroundMusicStudio';
-import { TranscriptionStudio } from './components/TranscriptionStudio';
+import { TranscriptionStudio, ProjectStudioLaunchContext } from './components/TranscriptionStudio';
 import { 
   TRADITIONAL_RHYTHM_PRESETS, 
   DEFAULT_SOUNDSCAPES, 
@@ -66,6 +66,14 @@ import {
 import { cleanTextForSpeech } from './utils/textCleaner';
 import { copyTextToClipboard } from './utils/clipboard';
 import { useApiAuth, authFetch, apiAuthStore } from './services/apiAuth';
+import { usePWAInstall } from './hooks/usePWAInstall';
+import {
+  consumePendingShares,
+  detectIncomingMediaKind,
+  IncomingPayload,
+  registerLaunchQueueConsumer,
+} from './utils/incomingShareStore';
+import { IncomingDestination, IncomingFileModal } from './components/IncomingFileModal';
 
 interface SynthesisPresetConfig {
   domain: string;
@@ -357,6 +365,8 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState<string>('');
   const [newProjectName, setNewProjectName] = useState('');
   const [libNewProjectName, setLibNewProjectName] = useState('');
+  const [classicLibSearch, setClassicLibSearch] = useState('');
+  const [classicLibCategory, setClassicLibCategory] = useState<'all' | 'audios' | 'texts' | 'videos'>('all');
 
   // Initialisation et proposition clé API si non encore configurée
   useEffect(() => {
@@ -466,6 +476,71 @@ export default function App() {
     } catch (e) {
       console.warn("Storage error saving preset:", e);
       showToast("Erreur lors de la sauvegarde du préréglage local.", "error");
+    }
+  };
+
+  // Export current voice & audio effects preset as a JSON file
+  const handleExportDefaultPreset = () => {
+    try {
+      const customProfile = isCustomVoiceId(voiceName)
+        ? customVoices.find((cv) => cv.id === extractCustomVoiceId(voiceName)) || null
+        : null;
+
+      const exportPayload = {
+        app: 'VoxArt Studio — RidiaLArt-Vision',
+        type: 'voxart_synthesis_preset',
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        voiceConfig: {
+          domain,
+          language,
+          style,
+          gender,
+          voiceName,
+          model,
+          ...(customProfile ? { customVoiceProfile: customProfile } : {}),
+        },
+        effectsConfig: {
+          voicePitch,
+          voiceVolume,
+          backingVolume,
+          enableCrossfade,
+          crossfadeDuration,
+          fadeInDuration,
+          fadeOutDuration,
+          defaultBackingTrackId: activeBackingTrack ? activeBackingTrack.title : null,
+        },
+        preset: {
+          domain,
+          language,
+          style,
+          gender,
+          voiceName,
+          voicePitch,
+          voiceVolume,
+          backingVolume,
+          enableCrossfade,
+          crossfadeDuration,
+          model,
+          defaultBackingTrackId: activeBackingTrack ? activeBackingTrack.title : undefined,
+          savedAt: defaultPresetInfo || new Date().toISOString(),
+        },
+      };
+
+      const jsonStr = JSON.stringify(exportPayload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `voxart_prereglage_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast("Préréglage de voix et d'effets exporté en JSON !", "success");
+    } catch (e) {
+      console.warn("Error exporting preset JSON:", e);
+      showToast("Erreur lors de l'export du préréglage JSON.", "error");
     }
   };
 
@@ -834,7 +909,19 @@ export default function App() {
     }
   }, [hashRoute]);
   const [preloadedVideoFile, setPreloadedVideoFile] = useState<File | null>(null);
+  const [preloadedVoiceoverFile, setPreloadedVoiceoverFile] = useState<File | null>(null);
+  const [preloadedScriptPayload, setPreloadedScriptPayload] = useState<{ text: string; nonce: number } | null>(null);
+  const [projectStudioLaunchContext, setProjectStudioLaunchContext] = useState<ProjectStudioLaunchContext | null>(null);
+  const [incomingPayload, setIncomingPayload] = useState<IncomingPayload | null>(null);
   const homeVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const phonePickerInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleOpenProjectVideoStudio = (ctx: ProjectStudioLaunchContext) => {
+    setProjectStudioLaunchContext({ ...ctx });
+    setCurrentViewState('home');
+    setHomeModeState('video_dubbing');
+    navigateHash('video_dubbing');
+  };
   const [batchRawText, setBatchRawText] = useState('');
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
   const [batchTargetProject, setBatchTargetProject] = useState('Projet_Audiobook_Lots');
@@ -863,6 +950,206 @@ export default function App() {
   };
 
   const appUpdate = useAppUpdate((msg, type) => showToast(msg, type || 'info'));
+  const pwaInstall = usePWAInstall();
+
+  const handleInstallPWA = async () => {
+    const outcome = await pwaInstall.promptInstall();
+    if (outcome === 'accepted') {
+      showToast("VoxArt installé ! Il apparaît désormais dans « Partager » et « Ouvrir avec ».", "success");
+    } else if (outcome === 'unavailable') {
+      showToast("Utilisez le menu de votre navigateur (Installer l'application) pour l'ajouter.", "info");
+    }
+  };
+
+  const handleOpenPhoneFilePicker = () => {
+    phonePickerInputRef.current?.click();
+  };
+
+  const handlePhonePickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+    if (selectedFiles.length > 0) {
+      setIncomingPayload({
+        source: 'file_picker',
+        files: selectedFiles,
+      });
+    }
+    e.target.value = '';
+  };
+
+  // Listen to Web Share Target (?shared=1 / SW messages) & File Handlers (window.launchQueue)
+  useEffect(() => {
+    let active = true;
+
+    const checkShareInbox = async () => {
+      const items = await consumePendingShares();
+      if (!active || items.length === 0) return;
+      const latest = items[0];
+      if (latest.files.length > 0 || latest.text || latest.title || latest.url) {
+        setIncomingPayload(latest);
+      }
+      if (window.location.search.includes('shared=')) {
+        const cleanUrl = `${window.location.pathname}${window.location.hash || ''}`;
+        window.history.replaceState({}, '', cleanUrl);
+      }
+    };
+
+    checkShareInbox();
+
+    const handleSwMessage = (ev: MessageEvent) => {
+      if (ev.data && ev.data.type === 'VOXART_INCOMING_SHARE') {
+        checkShareInbox();
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    }
+
+    const unregisterLaunchQueue = registerLaunchQueueConsumer((files) => {
+      if (!active || files.length === 0) return;
+      setIncomingPayload({
+        source: 'open_with',
+        files,
+      });
+    });
+
+    return () => {
+      active = false;
+      unregisterLaunchQueue();
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      }
+    };
+  }, []);
+
+  const handleRouteIncomingDestination = async (dest: IncomingDestination) => {
+    setIncomingPayload(null);
+
+    if (dest.action === 'video_dubbing') {
+      if (dest.file) {
+        const kind = detectIncomingMediaKind(dest.file);
+        if (kind === 'video') {
+          setPreloadedVideoFile(dest.file);
+        } else if (kind === 'audio') {
+          setPreloadedVoiceoverFile(dest.file);
+        } else {
+          const content = await dest.file.text();
+          setText(content);
+          setPreloadedScriptPayload({ text: content, nonce: Date.now() });
+        }
+      } else if (dest.text) {
+        setText(dest.text);
+        setPreloadedScriptPayload({ text: dest.text, nonce: Date.now() });
+      }
+      setCurrentViewState('home');
+      setHomeModeState('video_dubbing');
+      navigateHash('video_dubbing');
+      showToast('Fichier chargé dans Doublage Vidéo & Sous-titres .SRT !', 'success');
+      return;
+    }
+
+    if (dest.action === 'voiceover_track') {
+      setPreloadedVoiceoverFile(dest.file);
+      setCurrentViewState('home');
+      setHomeModeState('video_dubbing');
+      navigateHash('video_dubbing');
+      showToast(`Voix off "${dest.file.name}" posée dans le studio vidéo !`, 'success');
+      return;
+    }
+
+    if (dest.action === 'backing_track') {
+      const url = URL.createObjectURL(dest.file);
+      setActiveBackingTrack({
+        url,
+        title: dest.file.name.replace(/\.[^/.]+$/, ''),
+        category: 'Import Mobile',
+      });
+      setShowMixer(true);
+      if (interfaceMode === 'hub') {
+        navigateHash('music_mixer');
+      } else {
+        setCurrentView('home');
+        setHomeMode('single');
+      }
+      showToast(`Audio "${dest.file.name}" chargé comme fond sonore !`, 'success');
+      return;
+    }
+
+    if (dest.action === 'vocal_studio') {
+      let content = dest.text || '';
+      if (dest.file) {
+        content = await dest.file.text();
+      }
+      setText(content);
+      localStorage.setItem('voxart_autosave_text', content);
+      if (interfaceMode === 'hub') {
+        navigateHash('vocal_single');
+      } else {
+        setCurrentView('home');
+        setHomeMode('single');
+      }
+      showToast('Texte chargé dans le Studio Vocal !', 'success');
+      return;
+    }
+
+    if (dest.action === 'import_json') {
+      try {
+        const content = await dest.file.text();
+        const parsed = JSON.parse(content);
+        if (parsed.projectName && parsed.projectData) {
+          const updated = { ...library, [parsed.projectName]: parsed.projectData };
+          saveLibraryToStorage(updated);
+          showToast(`Projet "${parsed.projectName}" importé dans la bibliothèque !`, 'success');
+        } else if (parsed.preset || parsed.voiceConfig) {
+          const p = parsed.preset || parsed.voiceConfig;
+          if (p.domain) setDomain(p.domain);
+          if (p.language) setLanguage(p.language);
+          if (p.style) setStyle(p.style);
+          if (p.gender) setGender(p.gender);
+          if (p.voiceName) setVoiceName(p.voiceName);
+          if (typeof p.voicePitch === 'number') setVoicePitch(p.voicePitch);
+          showToast('Préréglage VoxArt importé et activé !', 'success');
+        } else {
+          showToast('Format JSON non reconnu pour VoxArt.', 'error');
+        }
+      } catch {
+        showToast('Impossible de lire ce fichier JSON.', 'error');
+      }
+      return;
+    }
+
+    if (dest.action === 'save_to_project') {
+      const targetProj = dest.projectName.trim() || 'Imports_Mobile';
+      if (dest.file) {
+        const kind = detectIncomingMediaKind(dest.file);
+        const cleanName = dest.file.name.replace(/\.[^/.]+$/, '') || 'Import_Mobile';
+        if (kind === 'video') {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Lecture impossible'));
+            reader.readAsDataURL(dest.file!);
+          });
+          handleSaveAnyToLibrary(targetProj, 'videos', cleanName, dataUrl);
+        } else if (kind === 'audio') {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Lecture impossible'));
+            reader.readAsDataURL(dest.file!);
+          });
+          handleSaveAnyToLibrary(targetProj, 'audios', cleanName, dataUrl);
+        } else {
+          const content = await dest.file.text();
+          handleSaveAnyToLibrary(targetProj, 'texts', dest.file.name, content);
+        }
+      } else if (dest.text) {
+        handleSaveAnyToLibrary(targetProj, 'texts', `Partage_${new Date().toISOString().slice(11, 16).replace(':', 'h')}`, dest.text);
+      }
+      setCurrentView('library');
+      showToast(`Enregistré dans le projet « ${targetProj} » !`, 'success');
+    }
+  };
 
   // Safe Dialog Modal System (replaces window.prompt & window.confirm for iframe compliance)
   interface DialogConfig {
@@ -1334,7 +1621,8 @@ export default function App() {
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
-      const blob = new Blob([bytes], { type: 'audio/mp3' });
+      const isRiffWav = bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+      const blob = new Blob([bytes], { type: isRiffWav ? 'audio/wav' : 'audio/mp3' });
       const audioUrl = URL.createObjectURL(blob);
 
       if (isTest) {
@@ -2471,21 +2759,23 @@ export default function App() {
         }, 3, effectiveKey);
 
         const data = await response.json();
-        if (!response.ok || data.error) {
-          throw new Error(data.error || `Erreur serveur ${response.status}`);
+        if (!response.ok || data.fallback || data.error || !data.audio) {
+          throw new Error(data.message || data.error || `Erreur serveur ${response.status}`);
         }
 
         const base64Audio = data.audio;
         const binary = atob(base64Audio);
         const bytes = new Uint8Array(binary.length);
         for (let b = 0; b < binary.length; b++) bytes[b] = binary.charCodeAt(b);
-        const blob = new Blob([bytes], { type: 'audio/mp3' });
+        const isRiffWav = bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+        const mimeType = isRiffWav ? 'audio/wav' : 'audio/mp3';
+        const blob = new Blob([bytes], { type: mimeType });
         const audioUrl = URL.createObjectURL(blob);
 
         const audioItem: SavedAudioItem = {
           id: Date.now() + i,
           name: batchQueue[i].name,
-          data: `data:audio/mp3;base64,${base64Audio}`
+          data: `data:${mimeType};base64,${base64Audio}`
         };
 
         const formattedScript = `[Studio: VoxArt - RidiaLArt-Vision]
@@ -2582,15 +2872,17 @@ ${textToRead}`;
       }, 3, effectiveKey);
 
       const data = await response.json();
-      if (!response.ok || data.error) {
-        throw new Error(data.error || `Erreur ${response.status}`);
+      if (!response.ok || data.fallback || data.error || !data.audio) {
+        throw new Error(data.message || data.error || `Erreur ${response.status}`);
       }
 
       const base64Audio = data.audio;
       const binary = atob(base64Audio);
       const bytes = new Uint8Array(binary.length);
       for (let b = 0; b < binary.length; b++) bytes[b] = binary.charCodeAt(b);
-      let blob = new Blob([bytes], { type: 'audio/mp3' });
+      const isRiffWav = bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+      let mimeType = isRiffWav ? 'audio/wav' : 'audio/mp3';
+      let blob = new Blob([bytes], { type: mimeType });
       let finalBase64Audio = base64Audio;
 
       if (batchCompressMp3) {
@@ -2606,6 +2898,7 @@ ${textToRead}`;
           source.start(0);
           const rendered = await offlineCtx.startRendering();
           blob = audioBufferToWavBlob(rendered);
+          mimeType = 'audio/wav';
 
           const compressedBuffer = await blob.arrayBuffer();
           const compressedBytes = new Uint8Array(compressedBuffer);
@@ -2624,7 +2917,7 @@ ${textToRead}`;
       const audioItem: SavedAudioItem = {
         id: Date.now(),
         name: item.name,
-        data: `data:audio/mp3;base64,${finalBase64Audio}`
+        data: `data:${mimeType};base64,${finalBase64Audio}`
       };
 
       const formattedScript = `[Studio: VoxArt - RidiaLArt-Vision]
@@ -2861,7 +3154,7 @@ ${item.text}`;
       <main className={`relative z-10 flex-1 w-full mx-auto p-4 sm:p-6 transition-all ${
         interfaceMode === 'hub' && hashRoute === 'home'
           ? 'max-w-4xl flex flex-col justify-center'
-          : currentView === 'rhythm_studio'
+          : currentView === 'rhythm_studio' || (currentView === 'home' && (homeMode === 'video_dubbing' || homeMode === 'transcription'))
           ? 'max-w-4xl'
           : homeMode === 'batch' && currentView === 'home'
           ? 'max-w-2xl'
@@ -2885,6 +3178,10 @@ ${item.text}`;
             projectCount={Object.keys(library).length}
             hasDraftText={Boolean(text.trim())}
             activeBackingTrackTitle={activeBackingTrack?.title || null}
+            onOpenPhoneFilePicker={handleOpenPhoneFilePicker}
+            canInstallPWA={pwaInstall.canInstall}
+            isPWAInstalled={pwaInstall.isInstalled}
+            onInstallPWA={handleInstallPWA}
           />
         )}
 
@@ -3141,8 +3438,20 @@ ${item.text}`;
                   addToast={showToast}
                   activeBackingTrack={activeBackingTrack}
                   initialVideoFile={preloadedVideoFile}
+                  initialVoiceoverFile={preloadedVoiceoverFile}
                   initialText={text}
+                  initialScriptPayload={preloadedScriptPayload}
                   library={library}
+                  customVoices={customVoices}
+                  launchContext={projectStudioLaunchContext}
+                  onSaveAssetToProject={handleSaveAnyToLibrary}
+                  onBackToProject={
+                    projectStudioLaunchContext
+                      ? () => {
+                          setCurrentView('library');
+                        }
+                      : undefined
+                  }
                   onSwitchMode={(mode) => setHomeMode(mode as any)}
                   onInsertTextToStudio={(transcribedText) => {
                     setText(transcribedText);
@@ -4679,6 +4988,7 @@ ${item.text}`;
                 showToast("Vidéo supprimée.", "info");
               }
             }}
+            onOpenProjectVideoStudio={handleOpenProjectVideoStudio}
           />
         )}
 
@@ -4771,19 +5081,143 @@ ${item.text}`;
               </div>
             </div>
 
+            {/* Recherche & Filtres de Catégorie */}
+            <div className="bg-[#313244]/70 p-3.5 rounded-xl border border-[#45475a] space-y-2.5 mt-4">
+              <div className="relative">
+                <Search className="w-4 h-4 text-[#a6adc8] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={classicLibSearch}
+                  onChange={(e) => setClassicLibSearch(e.target.value)}
+                  placeholder="Rechercher un projet, audio, script ou vidéo..."
+                  aria-label="Rechercher dans la bibliothèque"
+                  className="w-full pl-9 pr-8 py-2 rounded-lg bg-[#1e1e2e] border border-[#45475a] focus:border-[#89b4fa] focus:outline-none text-[#cdd6f4] text-xs"
+                />
+                {classicLibSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setClassicLibSearch('')}
+                    aria-label="Effacer la recherche"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#a6adc8] hover:text-white cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {(
+                  [
+                    { id: 'all', label: 'Tous' },
+                    { id: 'audios', label: 'Audio' },
+                    { id: 'texts', label: 'Script' },
+                    { id: 'videos', label: 'Vidéo' },
+                  ] as const
+                ).map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setClassicLibCategory(cat.id)}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                      classicLibCategory === cat.id
+                        ? 'bg-[#89b4fa] text-[#11111b] border-[#89b4fa] font-bold'
+                        : 'bg-[#1e1e2e] text-[#a6adc8] border-[#45475a] hover:text-[#cdd6f4]'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-4 mt-4">
               {Object.keys(library).length === 0 ? (
                 <div className="text-center py-12 text-[#a6adc8] text-xs">
                   Aucun projet dans la bibliothèque VoxArt pour le moment.
                 </div>
-              ) : (
-                Object.keys(library).map(proj => {
-                  const pData = library[proj];
+              ) : (() => {
+                const q = classicLibSearch.trim().toLowerCase();
+                const filteredClassicEntries = Object.keys(library)
+                  .map((proj) => {
+                    const pData = library[proj];
+                    const projMetaMatch = !q || proj.toLowerCase().includes(q);
+                    const audioEntries = (pData.audios || [])
+                      .map((item, idx) => ({ item, idx }))
+                      .filter(({ item }) => !q || projMetaMatch || item.name.toLowerCase().includes(q));
+                    const textEntries = (pData.texts || [])
+                      .map((item, idx) => ({ item, idx }))
+                      .filter(
+                        ({ item }) =>
+                          !q ||
+                          projMetaMatch ||
+                          item.name.toLowerCase().includes(q) ||
+                          item.content.toLowerCase().includes(q)
+                      );
+                    const videoEntries = (pData.videos || [])
+                      .map((item, idx) => ({ item, idx }))
+                      .filter(({ item }) => !q || projMetaMatch || item.name.toLowerCase().includes(q));
+
+                    if (classicLibCategory === 'audios' && audioEntries.length === 0) return null;
+                    if (classicLibCategory === 'texts' && textEntries.length === 0) return null;
+                    if (classicLibCategory === 'videos' && videoEntries.length === 0) return null;
+                    if (
+                      q &&
+                      !projMetaMatch &&
+                      audioEntries.length === 0 &&
+                      textEntries.length === 0 &&
+                      videoEntries.length === 0
+                    ) {
+                      return null;
+                    }
+
+                    return { proj, pData, audioEntries, textEntries, videoEntries };
+                  })
+                  .filter((e): e is NonNullable<typeof e> => e !== null);
+
+                if (filteredClassicEntries.length === 0) {
+                  return (
+                    <div className="text-center py-10 bg-[#313244]/40 border border-dashed border-[#45475a] rounded-xl text-xs text-[#a6adc8] space-y-2">
+                      <p>Aucun projet ou élément ne correspond à votre recherche.</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClassicLibSearch('');
+                          setClassicLibCategory('all');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] font-semibold cursor-pointer"
+                      >
+                        Réinitialiser les filtres
+                      </button>
+                    </div>
+                  );
+                }
+
+                return filteredClassicEntries.map(({ proj, pData, audioEntries, textEntries, videoEntries }) => {
+                  const showAudios = classicLibCategory === 'all' || classicLibCategory === 'audios';
+                  const showTexts = classicLibCategory === 'all' || classicLibCategory === 'texts';
+                  const showVideos = classicLibCategory === 'all' || classicLibCategory === 'videos';
                   return (
                     <div key={proj} className="bg-[#313244] p-4 rounded-xl border-l-4 border-[#89b4fa] space-y-3">
                       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                         <h3 className="text-sm font-bold text-[#89b4fa]">📁 {proj}</h3>
                         <div className="flex items-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleOpenProjectVideoStudio({
+                                projectName: proj,
+                                videoItem: pData.videos?.[0] || null,
+                                textItem: pData.texts?.[0] || null,
+                                audioItem: pData.audios?.[0] || null,
+                                focusSection: 'subtitles',
+                              })
+                            }
+                            className="px-2.5 py-1 rounded bg-[#a6e3a1] text-[#11111b] text-xs font-bold hover:opacity-90 flex items-center gap-1 cursor-pointer"
+                            title="Générer sous-titres, poser une voix off ou enregistrer au micro"
+                          >
+                            <Film className="w-3.5 h-3.5" />
+                            <span>Voix Off & Sous-titres</span>
+                          </button>
                           <button
                             onClick={() => renameProject(proj)}
                             className="px-2.5 py-1 rounded bg-[#313244] border border-[#89b4fa]/50 text-[#89b4fa] text-xs font-semibold hover:bg-[#89b4fa] hover:text-[#11111b]"
@@ -4825,12 +5259,13 @@ ${item.text}`;
                       </div>
 
                       {/* Audios */}
+                      {showAudios && (
                       <div className="space-y-1">
-                        <div className="text-xs font-semibold text-[#f9e2af]">🎵 Fichiers Audio (.mp3) :</div>
-                        {pData.audios.length === 0 ? (
+                        <div className="text-xs font-semibold text-[#f9e2af]">🎵 Fichiers Audio (.mp3 / .wav) :</div>
+                        {audioEntries.length === 0 ? (
                           <div className="text-[11px] text-[#6c7086]">Aucun audio</div>
                         ) : (
-                          pData.audios.map((item, idx) => {
+                          audioEntries.map(({ item, idx }) => {
                             const isRhythm = item.name.includes('[Rythme]');
                             return (
                             <div key={item.id} className={`flex items-center justify-between p-2 rounded-lg text-xs ${isRhythm ? 'bg-[#241307] border border-[#fbbf24]/30' : 'bg-[#1e1e2e]'}`}>
@@ -4939,16 +5374,18 @@ ${item.text}`;
                           })
                         )}
                       </div>
+                      )}
 
                       {/* Texts */}
+                      {showTexts && (
                       <div className="space-y-1.5 pt-1">
                         <div className="flex items-center justify-between pb-1">
                           <div className="text-xs font-semibold text-[#f9e2af]">📜 Scripts & Sous-titres (.txt / .srt) :</div>
-                          {pData.texts.length > 0 && (
+                          {textEntries.length > 0 && (
                             <button
                               onClick={async () => {
-                                const allText = pData.texts
-                                  .map(t => {
+                                const allText = textEntries
+                                  .map(({ item: t }) => {
                                     const clean = t.content.includes('----------------------------------------\n\n')
                                       ? t.content.split('----------------------------------------\n\n')[1]
                                       : t.content;
@@ -4981,10 +5418,10 @@ ${item.text}`;
                             </button>
                           )}
                         </div>
-                        {pData.texts.length === 0 ? (
+                        {textEntries.length === 0 ? (
                           <div className="text-[11px] text-[#6c7086]">Aucun texte</div>
                         ) : (
-                          pData.texts.map((item, idx) => {
+                          textEntries.map(({ item, idx }) => {
                             const cleanExcerpt = (
                               item.content.includes('----------------------------------------\n\n')
                                 ? item.content.split('----------------------------------------\n\n')[1]
@@ -5091,8 +5528,10 @@ ${item.text}`;
                           })
                         )}
                       </div>
+                      )}
 
                       {/* Videos (Google Flow / Veo 9:16) */}
+                      {showVideos && (
                       <div className="space-y-1.5 pt-2 border-t border-[#45475a]/40">
                         <div className="flex items-center justify-between pb-1">
                           <div className="text-xs font-semibold text-[#89b4fa] flex items-center gap-1.5">
@@ -5108,12 +5547,12 @@ ${item.text}`;
                             />
                           </label>
                         </div>
-                        {(!pData.videos || pData.videos.length === 0) ? (
+                        {videoEntries.length === 0 ? (
                           <div className="text-[11px] text-[#6c7086] italic py-1">
                             Aucune vidéo importée. Générez un clip 9:16 sur Google Flow et importez-le ici.
                           </div>
                         ) : (
-                          pData.videos.map((vid, idx) => (
+                          videoEntries.map(({ item: vid, idx }) => (
                             <div key={vid.id} className="flex items-center justify-between p-2 rounded-lg text-xs bg-[#1e1e2e] border border-[#313244]">
                               <div className="flex items-center gap-2 truncate max-w-[140px] sm:max-w-[210px]">
                                 <span>📱</span>
@@ -5122,6 +5561,22 @@ ${item.text}`;
                                 </span>
                               </div>
                               <div className="flex items-center gap-1.5 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleOpenProjectVideoStudio({
+                                      projectName: proj,
+                                      videoItem: vid,
+                                      textItem: pData.texts?.[0] || null,
+                                      focusSection: 'subtitles',
+                                    })
+                                  }
+                                  className="px-2.5 py-1 bg-[#a6e3a1]/20 hover:bg-[#a6e3a1]/35 text-[#a6e3a1] border border-[#a6e3a1]/40 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                                  title="Réglages Voix off, Micro & Sous-titres sur cette vidéo"
+                                >
+                                  <Mic className="w-3 h-3" />
+                                  <span>Voix off & Sous-titres</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => setActiveVideoModal({ url: vid.data, title: vid.name })}
@@ -5155,10 +5610,11 @@ ${item.text}`;
                           ))
                         )}
                       </div>
+                      )}
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
             </div>
           </div>
         )}
@@ -5240,6 +5696,60 @@ ${item.text}`;
               onRemoveCustomWallpaper={handleRemoveCustomWallpaper}
               onNotify={(msg, type) => showToast(msg, type)}
             />
+
+            {/* Application Mobile PWA : Installer, Partager & Ouvrir avec (VoxArt) */}
+            <div className="p-4 bg-[#181825] rounded-xl border border-[#89b4fa]/35 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-[#89b4fa]/15 text-[#89b4fa]">
+                    <Smartphone className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-[#cdd6f4]">
+                      Application Téléphone · « Partager » & « Ouvrir avec VoxArt »
+                    </h3>
+                    <p className="text-[11px] text-[#a6adc8] mt-0.5">
+                      Installez VoxArt sur votre téléphone pour que (VoxArt) apparaisse dans les menus système Partager et Ouvrir avec.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {pwaInstall.isInstalled ? (
+                  <span className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#a6e3a1]/15 border border-[#a6e3a1]/35 text-[#a6e3a1] text-xs font-bold inline-flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>VoxArt installé · Partager & Ouvrir avec actifs</span>
+                  </span>
+                ) : pwaInstall.canInstall ? (
+                  <button
+                    type="button"
+                    onClick={handleInstallPWA}
+                    className="min-h-[40px] px-4 py-2 rounded-xl bg-[#a6e3a1] hover:opacity-95 text-[#11111b] font-bold text-xs flex items-center gap-2 cursor-pointer"
+                  >
+                    <Smartphone className="w-4 h-4" />
+                    <span>Installer VoxArt sur l’appareil</span>
+                  </button>
+                ) : pwaInstall.isIOS ? (
+                  <p className="text-[11px] text-[#f9e2af]">
+                    Sur iPhone/iPad (Safari) : touchez le bouton Partager puis « Sur l’écran d’accueil ».
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-[#a6adc8]">
+                    Dans Chrome/Edge mobile : menu ⋮ puis « Installer l’application » pour activer Partager et Ouvrir avec VoxArt.
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleOpenPhoneFilePicker}
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] border border-[#89b4fa]/40 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileUp className="w-4 h-4" />
+                  <span>Sélectionner un fichier du téléphone</span>
+                </button>
+              </div>
+            </div>
 
             {/* Mises à jour PWA & Statut Version */}
             <UpdateSettingsSection
@@ -5441,23 +5951,32 @@ ${item.text}`;
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <div className="flex flex-col sm:flex-row flex-wrap gap-2 pt-1">
                 <button
                   type="button"
                   onClick={handleSaveDefaultPreset}
-                  className="py-2 px-3 rounded-lg bg-gradient-to-r from-[#d97706] to-[#fbbf24] text-[#1c0f04] font-bold text-xs flex items-center justify-center gap-1.5 shadow hover:opacity-90 transition-all cursor-pointer"
+                  className="flex-1 min-h-[40px] py-2 px-3 rounded-lg bg-gradient-to-r from-[#d97706] to-[#fbbf24] text-[#1c0f04] font-bold text-xs flex items-center justify-center gap-1.5 shadow hover:opacity-90 transition-all cursor-pointer"
                 >
-                  <Save className="w-3.5 h-3.5" />
+                  <Save className="w-3.5 h-3.5 shrink-0" />
                   <span>Enregistrer ces réglages par défaut</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportDefaultPreset}
+                  className="flex-1 min-h-[40px] py-2 px-3 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] border border-[#a6e3a1]/35 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>Exporter préréglage</span>
                 </button>
 
                 {hasCustomDefaultPreset && (
                   <button
                     type="button"
                     onClick={handleResetDefaultPreset}
-                    className="py-2 px-3 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#f38ba8] border border-[#f38ba8]/30 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    className="flex-1 min-h-[40px] py-2 px-3 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#f38ba8] border border-[#f38ba8]/30 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
+                    <RefreshCw className="w-3.5 h-3.5 shrink-0" />
                     <span>Rétablir valeurs d'usine</span>
                   </button>
                 )}
@@ -5668,6 +6187,23 @@ ${item.text}`;
           onTransferToVocalStudio={handleTransferFromAgent}
         />
       )}
+
+      {/* Sélecteur universel de fichiers du téléphone (vidéo, audio, texte, SRT, JSON) */}
+      <input
+        ref={phonePickerInputRef}
+        type="file"
+        accept="video/*,audio/*,.mp4,.mov,.webm,.mkv,.avi,.mp3,.wav,.ogg,.m4a,.txt,.srt,.vtt,.md,.json"
+        className="hidden"
+        onChange={handlePhonePickerChange}
+      />
+
+      {/* Modale d'acheminement pour fichiers sélectionnés / partagés / ouverts avec VoxArt */}
+      <IncomingFileModal
+        payload={incomingPayload}
+        projectNames={Object.keys(library)}
+        onClose={() => setIncomingPayload(null)}
+        onSelectDestination={handleRouteIncomingDestination}
+      />
     </div>
   );
 }

@@ -69,7 +69,9 @@ function extractEffectiveApiKey(req?: express.Request): string | null {
 
 const serverAi = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || "",
+  apiVersion: "v1beta",
   httpOptions: {
+    apiVersion: "v1beta",
     headers: {
       'User-Agent': 'aistudio-build'
     }
@@ -80,7 +82,11 @@ function getEffectiveAi(effectiveKey: string | null): GoogleGenAI {
   if (effectiveKey && isValidGeminiKey(effectiveKey)) {
     return new GoogleGenAI({
       apiKey: effectiveKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      apiVersion: "v1beta",
+      httpOptions: {
+        apiVersion: "v1beta",
+        headers: { 'User-Agent': 'aistudio-build' }
+      }
     });
   }
   return serverAi;
@@ -159,36 +165,54 @@ function cleanTextForSpeech(text: string): string {
         return res.status(400).json({ error: "Text or speakers dialogue is required" });
       }
 
+      const serverEnvKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
+      const canFallbackToServerEnv = !!(serverEnvKey && isValidGeminiKey(serverEnvKey) && effectiveKey !== serverEnvKey);
+      const runWithKeyFallback = async (fn: (client: GoogleGenAI) => Promise<any>) => {
+        try {
+          return await fn(effectiveAi);
+        } catch (err: any) {
+          const msg = err?.message || String(err || "");
+          const isBadKey = msg.includes("API key not valid") || msg.includes("API_KEY_INVALID");
+          if (isBadKey && canFallbackToServerEnv) {
+            console.warn("Client API key invalid on /api/tts, falling back to server GEMINI_API_KEY.");
+            return await fn(serverAi);
+          }
+          throw err;
+        }
+      };
+
       let response;
       if (multiSpeaker && speakers && Array.isArray(speakers) && speakers.length === 2) {
-        response = await effectiveAi.models.generateContent({
-          model: "gemini-3.8-flash-tts",
-          contents: [
-            {
-              role: "user",
-              parts: speakers.map((s: any) => ({
-                text: `${s.name}: ${s.text}`,
-                speechMetadata: {
-                  speaker: s.name,
-                  style: s.style || "Engaging podcast conversation tone",
-                },
-              })),
-            },
-          ],
-          config: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              multiSpeakerVoiceConfig: {
-                speakerVoiceConfigs: speakers.map((s: any) => ({
-                  speaker: s.name,
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: s.voice || "Kore" },
+        response = await runWithKeyFallback((client) =>
+          client.models.generateContent({
+            model: "gemini-3.8-flash-tts",
+            contents: [
+              {
+                role: "user",
+                parts: speakers.map((s: any) => ({
+                  text: `${s.name}: ${s.text}`,
+                  speechMetadata: {
+                    speaker: s.name,
+                    style: s.style || "Engaging podcast conversation tone",
                   },
                 })),
               },
+            ],
+            config: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                multiSpeakerVoiceConfig: {
+                  speakerVoiceConfigs: speakers.map((s: any) => ({
+                    speaker: s.name,
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: s.voice || "Kore" },
+                    },
+                  })),
+                },
+              },
             },
-          },
-        });
+          })
+        );
       } else {
         const cleanCustomStyle = typeof customVoiceStyle === 'string' ? customVoiceStyle.trim() : '';
         const comprehensiveStyle = [
@@ -211,32 +235,34 @@ function cleanTextForSpeech(text: string): string {
         let lastError;
         for (const m of uniqueModels) {
           try {
-            response = await effectiveAi.models.generateContent({
-              model: m,
-              contents: [
-                {
-                  role: "user",
-                  parts: [
-                    {
-                      text: sanitizedText,
-                      speechMetadata: comprehensiveStyle ? { style: comprehensiveStyle } : undefined,
+            response = await runWithKeyFallback((client) =>
+              client.models.generateContent({
+                model: m,
+                contents: [
+                  {
+                    role: "user",
+                    parts: [
+                      {
+                        text: sanitizedText,
+                        ...(comprehensiveStyle ? { speechMetadata: { style: comprehensiveStyle } } : {}),
+                      },
+                    ],
+                  },
+                ],
+                config: {
+                  responseModalities: ["AUDIO"],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: voiceName || "Kore" },
                     },
-                  ],
-                },
-              ],
-              config: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: voiceName || "Kore" },
                   },
                 },
-              },
-            });
+              })
+            );
             break; // Success!
           } catch (e: any) {
             lastError = e;
-            console.warn(`Model ${m} encountered error/quota limit, trying fallback model...`, e.message);
+            console.warn(`Model ${m} encountered error/quota limit, trying fallback model...`, e?.message || e);
           }
         }
 
@@ -252,16 +278,21 @@ function cleanTextForSpeech(text: string): string {
 
       res.json({ audio: base64Audio });
     } catch (err: any) {
-      const errMsg = err?.message || "";
-      const isKey = errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID") || err.status === 400;
+      const errMsg = err?.message || String(err || "");
+      console.error("TTS endpoint error:", err?.status, errMsg);
+      const isKey =
+        errMsg.includes("API key not valid") ||
+        errMsg.includes("API_KEY_INVALID") ||
+        errMsg.includes("API key should be set");
       if (isKey) {
         return res.status(200).json({
           fallback: true,
           isKeyError: true,
+          error: errMsg,
           message: "Clé API Gemini non reconnue ou invalide. Utilisation de la voix de synthèse locale."
         });
       }
-      const isQuota = err.status === 429 || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota");
+      const isQuota = err?.status === 429 || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota");
       if (isQuota) {
         return res.status(429).json({ 
           error: "Quota journalier gratuit Gemini atteint. Veuillez patienter ou configurer votre clé API dans les Paramètres." 
@@ -270,7 +301,7 @@ function cleanTextForSpeech(text: string): string {
       return res.status(200).json({
         fallback: true,
         error: errMsg || "Erreur TTS",
-        message: "Lecture vocale locale activée."
+        message: "Erreur de synthèse vocale Gemini. Lecture vocale locale activée."
       });
     }
   });
@@ -420,7 +451,7 @@ Retourne impérativement un objet JSON strict avec :
           if (response && response.text) break;
         } catch (e: any) {
           const eMsg = e?.message || "";
-          if (eMsg.includes("API key not valid") || eMsg.includes("API_KEY_INVALID") || e.status === 400) {
+          if (eMsg.includes("API key not valid") || eMsg.includes("API_KEY_INVALID")) {
             return res.json(fallbackResult);
           }
         }
@@ -542,7 +573,7 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
         } catch (e: any) {
           lastChatError = e;
           const eMsg = e?.message || "";
-          if (eMsg.includes("API key not valid") || eMsg.includes("API_KEY_INVALID") || e.status === 400) {
+          if (eMsg.includes("API key not valid") || eMsg.includes("API_KEY_INVALID")) {
             return res.status(200).json({ 
               reply: "La clé API Gemini configurée semble invalide ou expirée. Veuillez vérifier votre clé API dans les Paramètres ⚙️ pour réactiver l'Agent IA." 
             });
@@ -585,21 +616,39 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
     const ffmpeg = (await import('fluent-ffmpeg')).default;
     const os = (await import('os')).default;
     
-    let tempInputPath = path.join(os.tmpdir(), `input-${Date.now()}`);
-    let tempOutputPath = path.join(os.tmpdir(), `output-${Date.now()}.mp3`);
+    const file = req.file;
+    const ext = file ? (path.extname(file.originalname || '') || (file.mimetype?.includes('webm') ? '.webm' : file.mimetype?.includes('wav') ? '.wav' : file.mimetype?.includes('mp4') ? '.mp4' : '.bin')) : '.bin';
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    let tempInputPath = path.join(os.tmpdir(), `input-${stamp}${ext}`);
+    let tempOutputPath = path.join(os.tmpdir(), `output-${stamp}.mp3`);
 
     try {
-      const file = req.file;
       console.log("File uploaded:", file ? `${file.originalname} (${(file.size / (1024 * 1024)).toFixed(2)} MB, type: ${file.mimetype})` : "No file");
       
       if (!file) return res.status(400).json({ error: "Aucun fichier téléversé" });
 
       fs.writeFileSync(tempInputPath, file.buffer);
 
+      // Probe streams first so silent videos return a clear actionable error
+      const probeData: any = await new Promise((resolve) => {
+        ffmpeg.ffprobe(tempInputPath, (err, metadata) => {
+          if (err) resolve(null);
+          else resolve(metadata);
+        });
+      });
+      const hasAudioStream = Array.isArray(probeData?.streams)
+        ? probeData.streams.some((s: any) => s.codec_type === 'audio')
+        : true;
+      if (!hasAudioStream) {
+        return res.status(400).json({
+          error: "Cette vidéo ne contient aucune piste audio exploitable. Enregistrez ou posez une voix off, ou générez les sous-titres directement depuis votre script."
+        });
+      }
+
       // Pre-process audio or video file: extract audio stream into lightweight mono MP3 for transcription
       await new Promise<void>((resolve, reject) => {
         ffmpeg(tempInputPath)
-          .noVideo() // Demux: strip video stream, isolate audio
+          .noVideo()
           .toFormat('mp3')
           .audioChannels(1)
           .audioBitrate('64k')
@@ -624,6 +673,8 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
       if (!effectiveKey) return res.status(401).json({ error: "Clé API invalide ou absente" });
 
       const effectiveAi = getEffectiveAi(effectiveKey);
+      const serverEnvKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
+      const canFallbackToServerEnv = !!(serverEnvKey && isValidGeminiKey(serverEnvKey) && effectiveKey !== serverEnvKey);
 
       const transcriptionPrompt = `Tu es un transcripteur professionnel spécialisé dans le sous-titrage vidéo synchronisé.
 Transcris fidèlement et intégralement toute la parole détectée dans cet enregistrement (extrait d'une vidéo ou d'un fichier audio).
@@ -651,29 +702,42 @@ RÈGLES SRT STRICTES :
 3. Sois le plus précis possible sur les timecodes par rapport au timing réel de la voix dans l'audio.
 4. Ne mets aucun texte explicatif en dehors de ces deux blocs.`;
 
-      const transcribeModelsChain = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.8-flash"];
+      const transcribeModelsChain = ["gemini-3.5-transcribe", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
       let result;
       let lastErr;
 
+      const runTranscribeWithClient = async (client: GoogleGenAI, m: string) =>
+        client.models.generateContent({
+          model: m,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: transcriptionPrompt },
+                {
+                  inlineData: {
+                    mimeType: "audio/mp3",
+                    data: audioBuffer.toString("base64")
+                  }
+                }
+              ]
+            }
+          ]
+        });
+
       for (const m of transcribeModelsChain) {
         try {
-          result = await effectiveAi.models.generateContent({
-            model: m,
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  { text: transcriptionPrompt },
-                  {
-                    inlineData: {
-                      mimeType: "audio/mp3",
-                      data: audioBuffer.toString("base64")
-                    }
-                  }
-                ]
-              }
-            ]
-          });
+          try {
+            result = await runTranscribeWithClient(effectiveAi, m);
+          } catch (innerErr: any) {
+            const innerMsg = innerErr?.message || String(innerErr || "");
+            const isBadKey = innerMsg.includes("API key not valid") || innerMsg.includes("API_KEY_INVALID");
+            if (isBadKey && canFallbackToServerEnv) {
+              result = await runTranscribeWithClient(serverAi, m);
+            } else {
+              throw innerErr;
+            }
+          }
           if (result && result.text) break;
         } catch (e: any) {
           lastErr = e;
@@ -688,6 +752,13 @@ RÈGLES SRT STRICTES :
       res.json({ transcription: result.text });
     } catch (err: any) {
       console.error("Transcription error:", err);
+      const msg = err?.message || "";
+      if (err?.status === 429 || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
+        return res.status(429).json({ error: "Quota Gemini temporairement atteint pour la transcription. Réessayez dans un instant." });
+      }
+      if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || msg.includes("PERMISSION_DENIED")) {
+        return res.status(401).json({ error: "Clé API Gemini invalide ou expirée. Vérifiez vos Réglages." });
+      }
       res.status(500).json({ error: "Erreur lors de la transcription du fichier audio/vidéo" });
     } finally {
       if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
@@ -884,7 +955,7 @@ RÈGLES SRT STRICTES :
           error: "Quota Gemini temporairement atteint pour l'analyse vocale. Réessayez dans un instant ou sculptez votre profil manuellement ci-dessous.",
         });
       }
-      if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || err?.status === 400) {
+      if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || msg.includes("PERMISSION_DENIED")) {
         return res.status(401).json({
           error: "Clé API Gemini invalide ou expirée. Vérifiez votre clé dans les Réglages.",
         });
@@ -974,14 +1045,31 @@ RÈGLES SRT STRICTES :
       burnSubtitles = 'true',
       originalAudioVolume = '0.0', // '0.0' for replace, '0.2' for ducking background
       voiceVolume = '1.0',
+      voiceDelaySeconds = '0',
       musicVolume = '0.3',
-      subtitleStyle = 'yellow' // 'yellow' | 'classic' | 'afro'
+      subtitleStyle = 'yellow', // 'yellow' | 'classic' | 'afro'
+      subtitlePosition = 'bottom', // 'bottom' | 'center' | 'top'
+      subtitleFontSize = '18',
     } = req.body;
 
-    const tempId = Date.now();
-    const tempVideoPath = path.join(os.tmpdir(), `in-vid-${tempId}.mp4`);
-    const tempVoicePath = voiceFile ? path.join(os.tmpdir(), `in-voice-${tempId}.mp3`) : null;
-    const tempMusicPath = musicFile ? path.join(os.tmpdir(), `in-music-${tempId}.mp3`) : null;
+    const inferExt = (f?: Express.Multer.File, fallback = '.bin') => {
+      if (!f) return fallback;
+      const ext = path.extname(f.originalname || '').toLowerCase();
+      if (ext && ext.length <= 6) return ext;
+      const mime = (f.mimetype || '').toLowerCase();
+      if (mime.includes('wav')) return '.wav';
+      if (mime.includes('webm')) return '.webm';
+      if (mime.includes('ogg')) return '.ogg';
+      if (mime.includes('mp4') || mime.includes('m4a')) return mime.startsWith('audio') ? '.m4a' : '.mp4';
+      if (mime.includes('mpeg') || mime.includes('mp3')) return '.mp3';
+      if (mime.includes('quicktime')) return '.mov';
+      return fallback;
+    };
+
+    const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const tempVideoPath = path.join(os.tmpdir(), `in-vid-${tempId}${inferExt(videoFile, '.mp4')}`);
+    const tempVoicePath = voiceFile ? path.join(os.tmpdir(), `in-voice-${tempId}${inferExt(voiceFile, '.wav')}`) : null;
+    const tempMusicPath = musicFile ? path.join(os.tmpdir(), `in-music-${tempId}${inferExt(musicFile, '.wav')}`) : null;
     const tempSrtPath = path.join(os.tmpdir(), `sub-${tempId}.srt`);
     const tempOutputPath = path.join(os.tmpdir(), `out-vid-${tempId}.mp4`);
 
@@ -998,8 +1086,22 @@ RÈGLES SRT STRICTES :
 
       const shouldBurnSubs = burnSubtitles === 'true' && srtContent && srtContent.trim().length > 0;
       if (shouldBurnSubs) {
-        fs.writeFileSync(tempSrtPath, srtContent.trim(), 'utf8');
+        const normalizedSrt = srtContent.trim().replace(/\r\n/g, '\n');
+        fs.writeFileSync(tempSrtPath, normalizedSrt, 'utf8');
       }
+
+      // Probe video streams to detect whether an original audio track exists and obtain duration
+      const probeData: any = await new Promise((resolve) => {
+        ffmpeg.ffprobe(tempVideoPath, (err, metadata) => {
+          if (err) resolve(null);
+          else resolve(metadata);
+        });
+      });
+      const hasVideoAudioStream = Array.isArray(probeData?.streams)
+        ? probeData.streams.some((s: any) => s.codec_type === 'audio')
+        : false;
+      const probedDuration = Number(probeData?.format?.duration);
+      const videoDuration = Number.isFinite(probedDuration) && probedDuration > 0 ? probedDuration : 0;
 
       await new Promise<void>((resolve, reject) => {
         let command = ffmpeg().input(tempVideoPath);
@@ -1012,69 +1114,99 @@ RÈGLES SRT STRICTES :
           voiceInputIdx = nextInputIdx++;
         }
         if (tempMusicPath) {
-          command = command.input(tempMusicPath);
+          command = command.input(tempMusicPath).inputOptions(['-stream_loop -1']);
           musicInputIdx = nextInputIdx++;
         }
 
         const origVol = Math.max(0, Math.min(1, parseFloat(originalAudioVolume) || 0));
         const vVol = Math.max(0, Math.min(2, parseFloat(voiceVolume) || 1.0));
         const mVol = Math.max(0, Math.min(2, parseFloat(musicVolume) || 0.3));
+        const vDelayMs = Math.round(Math.max(0, Math.min(300, parseFloat(voiceDelaySeconds) || 0)) * 1000);
+        const fontSize = Math.round(Math.max(12, Math.min(34, parseFloat(subtitleFontSize) || 18)));
 
         const complexFilters: string[] = [];
         let videoMap = '0:v';
 
         // 1. Subtitles filter if requested
         if (shouldBurnSubs) {
-          let forceStyle = 'Fontname=Arial,Fontsize=18,PrimaryColour=&H0000FFFF,BackColour=&H80000000,BorderStyle=4,Outline=1,Shadow=1,Alignment=2,MarginV=30';
+          const alignment = subtitlePosition === 'top' ? 6 : subtitlePosition === 'center' ? 5 : 2;
+          const marginV = subtitlePosition === 'center' ? 10 : 32;
+          let primaryColour = '&H0000FFFF';
+          let backColour = '&H80000000';
+          let outline = 1;
+          let shadow = 1;
+
           if (subtitleStyle === 'classic') {
-            forceStyle = 'Fontname=Arial,Fontsize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=1,Shadow=1,Alignment=2,MarginV=30';
+            primaryColour = '&H00FFFFFF';
+            backColour = '&H80000000';
           } else if (subtitleStyle === 'afro') {
-            forceStyle = 'Fontname=Arial,Fontsize=19,PrimaryColour=&H0033CCFF,BackColour=&H90001030,BorderStyle=4,Outline=2,Shadow=2,Alignment=2,MarginV=30';
+            primaryColour = '&H0033CCFF';
+            backColour = '&H90001030';
+            outline = 2;
+            shadow = 2;
           }
 
+          const forceStyle = `Fontname=Arial,Fontsize=${fontSize},PrimaryColour=${primaryColour},BackColour=${backColour},BorderStyle=4,Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV}`;
           const escapedSrtPath = tempSrtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-          complexFilters.push(`[0:v]subtitles='${escapedSrtPath}':force_style='${forceStyle}'[vsub]`);
+          complexFilters.push(`[0:v]subtitles='${escapedSrtPath}':charenc=UTF-8:force_style='${forceStyle}'[vsub]`);
           videoMap = '[vsub]';
         }
 
-        // 2. Audio mixing with flexible inputs (original, voiceover, background music)
+        // 2. Audio mixing with flexible inputs (only reference [0:a] if video actually has audio!)
         const audioTags: string[] = [];
-        if (origVol > 0) {
+        if (hasVideoAudioStream && origVol > 0) {
           complexFilters.push(`[0:a]volume=${origVol}[orig_a]`);
           audioTags.push('[orig_a]');
         }
         if (voiceInputIdx !== null) {
-          complexFilters.push(`[${voiceInputIdx}:a]volume=${vVol}[voice_a]`);
+          const voiceChain: string[] = [`volume=${vVol}`];
+          if (vDelayMs > 0) {
+            voiceChain.push(`adelay=${vDelayMs}:all=1`);
+          }
+          if (videoDuration > 0) {
+            voiceChain.push(`apad=whole_dur=${videoDuration.toFixed(3)}`);
+          }
+          complexFilters.push(`[${voiceInputIdx}:a]${voiceChain.join(',')}[voice_a]`);
           audioTags.push('[voice_a]');
         }
         if (musicInputIdx !== null) {
-          complexFilters.push(`[${musicInputIdx}:a]volume=${mVol}[music_a]`);
+          const musicChain: string[] = [`volume=${mVol}`];
+          if (videoDuration > 0) {
+            musicChain.push(`atrim=0:${videoDuration.toFixed(3)},asetpts=PTS-STARTPTS`);
+          }
+          complexFilters.push(`[${musicInputIdx}:a]${musicChain.join(',')}[music_a]`);
           audioTags.push('[music_a]');
         }
 
-        let audioMap = '0:a?';
+        let audioMap: string | null = null;
         if (audioTags.length === 1) {
           audioMap = audioTags[0];
         } else if (audioTags.length > 1) {
-          complexFilters.push(`${audioTags.join('')}amix=inputs=${audioTags.length}:duration=first:dropout_transition=2[mixed_a]`);
+          complexFilters.push(`${audioTags.join('')}amix=inputs=${audioTags.length}:duration=longest:dropout_transition=2:normalize=0[mixed_a]`);
           audioMap = '[mixed_a]';
+        } else if (hasVideoAudioStream && origVol === 0 && !voiceFile && !musicFile) {
+          audioMap = null; // explicitly muted video
+        } else if (hasVideoAudioStream) {
+          audioMap = '0:a';
         }
 
         if (complexFilters.length > 0) {
           command = command.complexFilter(complexFilters);
         }
 
+        const outOpts = [
+          `-map ${videoMap}`,
+          ...(audioMap ? [`-map ${audioMap}`, '-c:a aac', '-b:a 192k'] : ['-an']),
+          '-c:v libx264',
+          '-pix_fmt yuv420p',
+          '-preset veryfast',
+          '-crf 23',
+          ...(videoDuration > 0 ? [`-t ${videoDuration.toFixed(3)}`] : []),
+          '-movflags +faststart'
+        ];
+
         command
-          .outputOptions([
-            `-map ${videoMap}`,
-            `-map ${audioMap}`,
-            '-c:v libx264',
-            '-preset veryfast',
-            '-crf 23',
-            '-c:a aac',
-            '-b:a 192k',
-            '-movflags +faststart'
-          ])
+          .outputOptions(outOpts)
           .toFormat('mp4')
           .on('start', (cmdLine) => {
             console.log("Running ffmpeg video export:", cmdLine);
@@ -1100,6 +1232,77 @@ RÈGLES SRT STRICTES :
       if (tempMusicPath && fs.existsSync(tempMusicPath)) try { fs.unlinkSync(tempMusicPath); } catch {}
       if (fs.existsSync(tempSrtPath)) try { fs.unlinkSync(tempSrtPath); } catch {}
       if (fs.existsSync(tempOutputPath)) try { fs.unlinkSync(tempOutputPath); } catch {}
+    }
+  });
+
+  // Fallback handler for Web Share Target POST /share-target when Service Worker is not yet controlling
+  app.post("/share-target", upload.array("media", 5), (req, res) => {
+    try {
+      const files = Array.isArray(req.files) ? (req.files as Express.Multer.File[]) : [];
+      const payload = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        receivedAt: Date.now(),
+        title: typeof req.body?.title === "string" ? req.body.title.trim() : "",
+        text: typeof req.body?.text === "string" ? req.body.text.trim() : "",
+        url: typeof req.body?.url === "string" ? req.body.url.trim() : "",
+        filesBase64: files
+          .filter((f) => f && f.buffer && f.buffer.length > 0 && f.buffer.length <= 20 * 1024 * 1024)
+          .map((f) => ({
+            name: f.originalname || `fichier_${Date.now()}`,
+            type: f.mimetype || "application/octet-stream",
+            size: f.size,
+            base64: f.buffer.toString("base64"),
+          })),
+      };
+      const safeJson = JSON.stringify(payload).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(`<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>Ouverture dans VoxArt...</title></head>
+<body style="background:#181825;color:#cdd6f4;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+<script>
+(function(){
+  var data = ${safeJson};
+  function b64ToBuf(b64){
+    var bin = atob(b64);
+    var arr = new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++){ arr[i] = bin.charCodeAt(i); }
+    return arr.buffer;
+  }
+  var req = indexedDB.open('voxart-share-db', 1);
+  req.onupgradeneeded = function(e){
+    var db = e.target.result;
+    if(!db.objectStoreNames.contains('incoming_shares')){
+      db.createObjectStore('incoming_shares', { keyPath: 'id' });
+    }
+  };
+  req.onsuccess = function(){
+    try {
+      var db = req.result;
+      var files = (data.filesBase64 || []).map(function(f){
+        return { name: f.name, type: f.type, size: f.size, lastModified: Date.now(), buffer: b64ToBuf(f.base64) };
+      });
+      var tx = db.transaction('incoming_shares', 'readwrite');
+      tx.objectStore('incoming_shares').put({
+        id: data.id,
+        receivedAt: data.receivedAt,
+        title: data.title,
+        text: data.text,
+        url: data.url,
+        files: files
+      });
+      tx.oncomplete = function(){ window.location.replace('/?shared=1'); };
+      tx.onerror = function(){ window.location.replace('/?shared=1'); };
+    } catch (err) {
+      window.location.replace('/?shared=1');
+    }
+  };
+  req.onerror = function(){ window.location.replace('/?shared=1'); };
+})();
+</script>
+<p>Transfert vers VoxArt Studio...</p>
+</body></html>`);
+    } catch {
+      res.redirect(303, "/?shared=1&shareError=1");
     }
   });
 

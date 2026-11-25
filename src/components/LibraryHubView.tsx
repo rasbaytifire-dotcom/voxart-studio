@@ -17,8 +17,11 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Share2,
   Sliders,
+  Subtitles,
+  Mic,
   Trash2,
   Upload,
   X,
@@ -53,7 +56,7 @@ export interface LibraryProjectData {
   updatedAt?: string;
 }
 
-type MediaCategoryTab = 'audios' | 'texts' | 'videos';
+type MediaCategoryTab = 'all' | 'audios' | 'texts' | 'videos';
 
 interface LibraryHubViewProps {
   library: Record<string, LibraryProjectData>;
@@ -84,6 +87,13 @@ interface LibraryHubViewProps {
   onUploadVideo: (projectName: string, e: React.ChangeEvent<HTMLInputElement>) => void;
   onWatchVideo: (url: string, title: string) => void;
   onDeleteVideo: (projectName: string, idx: number) => void;
+  onOpenProjectVideoStudio?: (options: {
+    projectName: string;
+    videoItem?: LibraryVideoItem | null;
+    textItem?: LibraryTextItem | null;
+    audioItem?: LibraryAudioItem | null;
+    focusSection?: 'subtitles' | 'voiceover' | 'mic';
+  }) => void;
 }
 
 export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
@@ -115,11 +125,15 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
   onUploadVideo,
   onWatchVideo,
   onDeleteVideo,
+  onOpenProjectVideoStudio,
 }) => {
   const projectNames = useMemo(() => Object.keys(library), [library]);
 
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<MediaCategoryTab>('audios');
+  const [activeTab, setActiveTab] = useState<MediaCategoryTab>('all');
+  const [hubSearchQuery, setHubSearchQuery] = useState('');
+  const [hubCategoryFilter, setHubCategoryFilter] = useState<MediaCategoryTab>('all');
+  const [projectSearchQuery, setProjectSearchQuery] = useState('');
   const [showCreateSheet, setShowCreateSheet] = useState(false);
   const [showBackupSheet, setShowBackupSheet] = useState(false);
   const [showProjectActionsSheet, setShowProjectActionsSheet] = useState(false);
@@ -131,6 +145,70 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
 
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+
+  const categoryTotals = useMemo(() => {
+    let withAudios = 0;
+    let withTexts = 0;
+    let withVideos = 0;
+    projectNames.forEach((proj) => {
+      const p = library[proj];
+      if ((p?.audios?.length || 0) > 0) withAudios++;
+      if ((p?.texts?.length || 0) > 0) withTexts++;
+      if ((p?.videos?.length || 0) > 0) withVideos++;
+    });
+    return {
+      all: projectNames.length,
+      audios: withAudios,
+      texts: withTexts,
+      videos: withVideos,
+    };
+  }, [library, projectNames]);
+
+  const filteredHubProjects = useMemo(() => {
+    const q = hubSearchQuery.trim().toLowerCase();
+    return projectNames
+      .map((proj) => {
+        const pData = library[proj];
+        const audios = pData?.audios || [];
+        const texts = pData?.texts || [];
+        const videos = pData?.videos || [];
+
+        if (hubCategoryFilter === 'audios' && audios.length === 0) return null;
+        if (hubCategoryFilter === 'texts' && texts.length === 0) return null;
+        if (hubCategoryFilter === 'videos' && videos.length === 0) return null;
+
+        if (!q) {
+          return { proj, pData, matchCount: 0 };
+        }
+
+        const audioMatches = audios.filter((a) => a.name.toLowerCase().includes(q)).length;
+        const textMatches = texts.filter(
+          (t) => t.name.toLowerCase().includes(q) || t.content.toLowerCase().includes(q)
+        ).length;
+        const videoMatches = videos.filter((v) => v.name.toLowerCase().includes(q)).length;
+
+        const projMetaMatch =
+          proj.toLowerCase().includes(q) ||
+          (pData?.category || '').toLowerCase().includes(q) ||
+          (pData?.folderPath || '').toLowerCase().includes(q);
+
+        const categoryItemMatches =
+          hubCategoryFilter === 'audios'
+            ? audioMatches
+            : hubCategoryFilter === 'texts'
+              ? textMatches
+              : hubCategoryFilter === 'videos'
+                ? videoMatches
+                : audioMatches + textMatches + videoMatches;
+
+        if (!projMetaMatch && categoryItemMatches === 0) return null;
+        return { proj, pData, matchCount: categoryItemMatches };
+      })
+      .filter(
+        (entry): entry is { proj: string; pData: LibraryProjectData; matchCount: number } =>
+          entry !== null
+      );
+  }, [library, projectNames, hubSearchQuery, hubCategoryFilter]);
 
   const handleExportAudioAsWav = async (audioId: number, dataUrl: string, filename: string) => {
     setExportingAudioId(audioId);
@@ -151,19 +229,42 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
   const openProject = (name: string) => {
     const data = library[name];
     setSelectedProject(name);
-    if (data) {
-      if (data.audios.length > 0) setActiveTab('audios');
-      else if (data.texts.length > 0) setActiveTab('texts');
-      else if ((data.videos?.length || 0) > 0) setActiveTab('videos');
-      else setActiveTab('audios');
+    setProjectSearchQuery(hubSearchQuery);
+    if (hubCategoryFilter !== 'all') {
+      setActiveTab(hubCategoryFilter);
+    } else if (data) {
+      if (data.audios.length > 0 || data.texts.length > 0 || (data.videos?.length || 0) > 0) {
+        setActiveTab('all');
+      } else {
+        setActiveTab('audios');
+      }
     }
   };
 
   // Vue Niveau 2 : Page dédiée d'un projet sélectionné
   if (selectedProject && activeProjectData) {
-    const audioCount = activeProjectData.audios.length;
-    const textCount = activeProjectData.texts.length;
-    const videoCount = activeProjectData.videos?.length || 0;
+    const q = projectSearchQuery.trim().toLowerCase();
+    const audioEntries = activeProjectData.audios
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => !q || item.name.toLowerCase().includes(q));
+    const textEntries = activeProjectData.texts
+      .map((item, idx) => ({ item, idx }))
+      .filter(
+        ({ item }) =>
+          !q || item.name.toLowerCase().includes(q) || item.content.toLowerCase().includes(q)
+      );
+    const videoEntries = (activeProjectData.videos || [])
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => !q || item.name.toLowerCase().includes(q));
+
+    const audioCount = audioEntries.length;
+    const textCount = textEntries.length;
+    const videoCount = videoEntries.length;
+    const totalCount = audioCount + textCount + videoCount;
+
+    const rawAudioTotal = activeProjectData.audios.length;
+    const rawTextTotal = activeProjectData.texts.length;
+    const rawVideoTotal = activeProjectData.videos?.length || 0;
 
     const activeAudio =
       selectedAudioIdx !== null ? activeProjectData.audios[selectedAudioIdx] : null;
@@ -174,13 +275,20 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
         ? activeProjectData.videos[selectedVideoIdx]
         : null;
 
+    const showAudiosSection = activeTab === 'audios' || (activeTab === 'all' && (audioCount > 0 || !q));
+    const showTextsSection = activeTab === 'texts' || (activeTab === 'all' && (textCount > 0 || !q));
+    const showVideosSection = activeTab === 'videos' || (activeTab === 'all' && (videoCount > 0 || !q));
+
     return (
       <div className="w-full max-w-4xl mx-auto space-y-4">
         {/* En-tête minimal du projet */}
         <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => setSelectedProject(null)}
+            onClick={() => {
+              setSelectedProject(null);
+              setProjectSearchQuery('');
+            }}
             className="min-h-[44px] px-3 py-2 rounded-xl bg-[#181825] border border-[#313244] hover:border-[#89b4fa]/60 text-xs font-semibold text-[#cdd6f4] flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
           >
             <ArrowLeft className="w-4 h-4 text-[#89b4fa]" />
@@ -192,8 +300,8 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
               {selectedProject}
             </h2>
             <p className="text-[11px] text-[#a6adc8] tabular-nums truncate">
-              {audioCount} audio{audioCount > 1 ? 's' : ''} · {textCount} script
-              {textCount > 1 ? 's' : ''} · {videoCount} vidéo{videoCount > 1 ? 's' : ''}
+              {rawAudioTotal} audio{rawAudioTotal > 1 ? 's' : ''} · {rawTextTotal} script
+              {rawTextTotal > 1 ? 's' : ''} · {rawVideoTotal} vidéo{rawVideoTotal > 1 ? 's' : ''}
             </p>
           </div>
 
@@ -207,62 +315,194 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
           </button>
         </div>
 
-        {/* Sélecteur de sous-catégorie du projet */}
-        <div className="grid grid-cols-3 gap-2 p-1.5 bg-[#1e1e2e] border border-[#313244] rounded-2xl">
+        {/* Barre Réglages Montage : Sous-titres & Voix Off / Micro */}
+        {onOpenProjectVideoStudio && (
+          <div className="bg-[#1e1e2e] border border-[#89b4fa]/35 rounded-2xl p-3.5 space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-[#cdd6f4] flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-[#89b4fa]" />
+                  <span>Réglages Montage du Projet : Voix Off & Sous-titres</span>
+                </h3>
+                <p className="text-[11px] text-[#a6adc8] mt-0.5">
+                  Assemblez vos médias du projet : générez les sous-titres SRT, enregistrez votre voix au micro ou posez une voix off.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenProjectVideoStudio({
+                    projectName: selectedProject,
+                    videoItem: activeProjectData.videos?.[0] || null,
+                    textItem: activeProjectData.texts?.[0] || null,
+                    focusSection: 'subtitles',
+                  })
+                }
+                className="min-h-[44px] px-3 py-2 rounded-xl bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+              >
+                <Subtitles className="w-4 h-4 shrink-0" />
+                <span>Générer / Éditer Sous-titres</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenProjectVideoStudio({
+                    projectName: selectedProject,
+                    videoItem: activeProjectData.videos?.[0] || null,
+                    textItem: activeProjectData.texts?.[0] || null,
+                    focusSection: 'mic',
+                  })
+                }
+                className="min-h-[44px] px-3 py-2 rounded-xl bg-[#181825] border border-[#f38ba8]/40 hover:border-[#f38ba8] text-[#f38ba8] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+              >
+                <Mic className="w-4 h-4 shrink-0" />
+                <span>Poser / Enregistrer Micro</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenProjectVideoStudio({
+                    projectName: selectedProject,
+                    videoItem: activeProjectData.videos?.[0] || null,
+                    textItem: activeProjectData.texts?.[0] || null,
+                    audioItem: activeProjectData.audios?.[0] || null,
+                    focusSection: 'voiceover',
+                  })
+                }
+                className="min-h-[44px] px-3 py-2 rounded-xl bg-[#181825] border border-[#a6e3a1]/40 hover:border-[#a6e3a1] text-[#a6e3a1] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+              >
+                <Film className="w-4 h-4 shrink-0" />
+                <span>Studio Montage Vidéo</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Recherche interne au projet */}
+        <div className="relative">
+          <Search className="w-4 h-4 text-[#a6adc8] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={projectSearchQuery}
+            onChange={(e) => setProjectSearchQuery(e.target.value)}
+            placeholder={`Rechercher dans "${selectedProject}" (audio, script, vidéo)...`}
+            aria-label="Rechercher dans le projet"
+            className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-xl bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] focus:outline-none text-xs sm:text-sm text-[#cdd6f4] placeholder:text-[#6c7086]"
+          />
+          {projectSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setProjectSearchQuery('')}
+              aria-label="Effacer la recherche"
+              className="absolute right-2 top-1/2 -translate-y-1/2 min-h-[32px] min-w-[32px] rounded-lg flex items-center justify-center text-[#a6adc8] hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Sélecteur de catégorie du projet */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-1.5 bg-[#1e1e2e] border border-[#313244] rounded-2xl">
+          <button
+            type="button"
+            onClick={() => setActiveTab('all')}
+            className={`min-h-[42px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+              activeTab === 'all'
+                ? 'bg-[#89b4fa] text-[#11111b]'
+                : 'text-[#a6adc8] hover:text-[#cdd6f4]'
+            }`}
+          >
+            <span>Tous</span>
+            <span className="tabular-nums opacity-80">({totalCount})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('audios')}
-            className={`min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            className={`min-h-[42px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
               activeTab === 'audios'
                 ? 'bg-[#89b4fa] text-[#11111b]'
                 : 'text-[#a6adc8] hover:text-[#cdd6f4]'
             }`}
           >
             <Music className="w-4 h-4 shrink-0" />
-            <span>Audios</span>
+            <span>Audio</span>
             <span className="tabular-nums opacity-80">({audioCount})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('texts')}
-            className={`min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            className={`min-h-[42px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
               activeTab === 'texts'
                 ? 'bg-[#89b4fa] text-[#11111b]'
                 : 'text-[#a6adc8] hover:text-[#cdd6f4]'
             }`}
           >
             <FileText className="w-4 h-4 shrink-0" />
-            <span>Scripts</span>
+            <span>Script</span>
             <span className="tabular-nums opacity-80">({textCount})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('videos')}
-            className={`min-h-[44px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            className={`min-h-[42px] px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
               activeTab === 'videos'
                 ? 'bg-[#89b4fa] text-[#11111b]'
                 : 'text-[#a6adc8] hover:text-[#cdd6f4]'
             }`}
           >
             <Film className="w-4 h-4 shrink-0" />
-            <span>Vidéos</span>
+            <span>Vidéo</span>
             <span className="tabular-nums opacity-80">({videoCount})</span>
           </button>
         </div>
 
-        {/* Contenu de la sous-catégorie active */}
-        <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 space-y-3">
-          {activeTab === 'audios' && (
-            <>
+        {/* Contenu filtré du projet */}
+        <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 space-y-5">
+          {activeTab === 'all' && totalCount === 0 && (
+            <div className="py-10 text-center space-y-2 text-xs text-[#a6adc8]">
+              <p>
+                {q
+                  ? `Aucun élément ne correspond à « ${projectSearchQuery.trim()} » dans ce projet.`
+                  : 'Ce projet ne contient encore aucun média.'}
+              </p>
+              {q && (
+                <button
+                  type="button"
+                  onClick={() => setProjectSearchQuery('')}
+                  className="px-3 py-1.5 rounded-lg bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] font-semibold cursor-pointer"
+                >
+                  Effacer la recherche
+                </button>
+              )}
+            </div>
+          )}
+
+          {showAudiosSection && (activeTab === 'audios' || audioCount > 0) && (
+            <div className="space-y-2.5">
+              {activeTab === 'all' && (
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#f9e2af]">
+                  <Music className="w-3.5 h-3.5" />
+                  <span>Audios ({audioCount})</span>
+                </div>
+              )}
+
               {audioCount === 0 ? (
-                <div className="py-10 text-center text-xs text-[#a6adc8]">
-                  Aucun fichier audio dans ce projet.
+                <div className="py-8 text-center text-xs text-[#a6adc8]">
+                  {q
+                    ? `Aucun fichier audio ne correspond à « ${projectSearchQuery.trim()} ».`
+                    : 'Aucun fichier audio dans ce projet.'}
                 </div>
               ) : (
                 <div className="divide-y divide-[#313244]">
-                  {activeProjectData.audios.map((item, idx) => {
+                  {audioEntries.map(({ item, idx }) => {
                     const isRhythm = item.name.includes('[Rythme]');
                     return (
                       <div
@@ -328,16 +568,30 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   })}
                 </div>
               )}
-            </>
+            </div>
           )}
 
-          {activeTab === 'texts' && (
-            <>
-              {textCount > 1 && (
-                <div className="flex justify-end pb-1">
+          {showTextsSection && (activeTab === 'texts' || textCount > 0) && (
+            <div className={`space-y-2.5 ${activeTab === 'all' && audioCount > 0 ? 'pt-3 border-t border-[#313244]' : ''}`}>
+              <div className="flex items-center justify-between gap-2">
+                {activeTab === 'all' ? (
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#cba6f7]">
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Scripts ({textCount})</span>
+                  </div>
+                ) : (
+                  <span />
+                )}
+
+                {textCount > 1 && (
                   <button
                     type="button"
-                    onClick={() => onCopyAllScripts(selectedProject, activeProjectData.texts)}
+                    onClick={() =>
+                      onCopyAllScripts(
+                        selectedProject,
+                        textEntries.map((entry) => entry.item)
+                      )
+                    }
                     className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-colors cursor-pointer ${
                       copiedScriptId === `section-${selectedProject}`
                         ? 'bg-[#a6e3a1] text-[#11111b] border-[#a6e3a1]'
@@ -356,16 +610,18 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                       </>
                     )}
                   </button>
-                </div>
-              )}
+                )}
+              </div>
 
               {textCount === 0 ? (
-                <div className="py-10 text-center text-xs text-[#a6adc8]">
-                  Aucun script ou sous-titre dans ce projet.
+                <div className="py-8 text-center text-xs text-[#a6adc8]">
+                  {q
+                    ? `Aucun script ne correspond à « ${projectSearchQuery.trim()} ».`
+                    : 'Aucun script ou sous-titre dans ce projet.'}
                 </div>
               ) : (
                 <div className="divide-y divide-[#313244]">
-                  {activeProjectData.texts.map((item, idx) => {
+                  {textEntries.map(({ item, idx }) => {
                     const cleanExcerpt =
                       (item.content.includes('----------------------------------------\n\n')
                         ? item.content.split('----------------------------------------\n\n')[1]
@@ -420,13 +676,20 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   })}
                 </div>
               )}
-            </>
+            </div>
           )}
 
-          {activeTab === 'videos' && (
-            <>
+          {showVideosSection && (activeTab === 'videos' || videoCount > 0) && (
+            <div className={`space-y-2.5 ${activeTab === 'all' && (audioCount > 0 || textCount > 0) ? 'pt-3 border-t border-[#313244]' : ''}`}>
               <div className="flex items-center justify-between gap-2 pb-1">
-                <span className="text-xs text-[#a6adc8]">Format vertical 9:16 (Veo / Flow)</span>
+                {activeTab === 'all' ? (
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#f38ba8]">
+                    <Film className="w-3.5 h-3.5" />
+                    <span>Vidéos ({videoCount})</span>
+                  </div>
+                ) : (
+                  <span className="text-xs text-[#a6adc8]">Format vertical 9:16 (Veo / Flow)</span>
+                )}
                 <button
                   type="button"
                   onClick={() => videoInputRef.current?.click()}
@@ -448,12 +711,14 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
               </div>
 
               {videoCount === 0 ? (
-                <div className="py-10 text-center text-xs text-[#a6adc8]">
-                  Aucune vidéo importée dans ce projet.
+                <div className="py-8 text-center text-xs text-[#a6adc8]">
+                  {q
+                    ? `Aucune vidéo ne correspond à « ${projectSearchQuery.trim()} ».`
+                    : 'Aucune vidéo importée dans ce projet.'}
                 </div>
               ) : (
                 <div className="divide-y divide-[#313244]">
-                  {activeProjectData.videos?.map((vid, idx) => (
+                  {videoEntries.map(({ item: vid, idx }) => (
                     <div
                       key={vid.id}
                       className="py-2.5 first:pt-0 last:pb-0 flex items-center justify-between gap-2.5"
@@ -488,7 +753,7 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   ))}
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
 
@@ -604,6 +869,26 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   <Play className="w-4 h-4 fill-current" />
                   <span>Écouter dans le studio</span>
                 </button>
+
+                {onOpenProjectVideoStudio && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const audioChoice = activeAudio;
+                      setSelectedAudioIdx(null);
+                      onOpenProjectVideoStudio({
+                        projectName: selectedProject,
+                        videoItem: activeProjectData.videos?.[0] || null,
+                        audioItem: audioChoice,
+                        focusSection: 'voiceover',
+                      });
+                    }}
+                    className="w-full min-h-[48px] px-4 rounded-xl bg-[#181825] border border-[#a6e3a1]/40 hover:border-[#a6e3a1] flex items-center gap-3 text-sm font-semibold text-[#a6e3a1] cursor-pointer"
+                  >
+                    <Film className="w-4 h-4" />
+                    <span>Poser comme voix off vidéo</span>
+                  </button>
+                )}
 
                 {activeAudio.name.includes('[Rythme]') && (
                   <>
@@ -723,6 +1008,26 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   <Play className="w-4 h-4 fill-current" />
                   <span>Ouvrir dans le studio vocal</span>
                 </button>
+
+                {onOpenProjectVideoStudio && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const textChoice = activeText;
+                      setSelectedTextIdx(null);
+                      onOpenProjectVideoStudio({
+                        projectName: selectedProject,
+                        videoItem: activeProjectData.videos?.[0] || null,
+                        textItem: textChoice,
+                        focusSection: 'subtitles',
+                      });
+                    }}
+                    className="w-full min-h-[48px] px-4 rounded-xl bg-[#181825] border border-[#cba6f7]/40 hover:border-[#cba6f7] flex items-center gap-3 text-sm font-semibold text-[#cba6f7] cursor-pointer"
+                  >
+                    <Subtitles className="w-4 h-4" />
+                    <span>Générer sous-titres & Voix off</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -848,6 +1153,26 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   <span>Lire en format 9:16</span>
                 </button>
 
+                {onOpenProjectVideoStudio && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const vidChoice = activeVideo;
+                      setSelectedVideoIdx(null);
+                      onOpenProjectVideoStudio({
+                        projectName: selectedProject,
+                        videoItem: vidChoice,
+                        textItem: activeProjectData.texts?.[0] || null,
+                        focusSection: 'subtitles',
+                      });
+                    }}
+                    className="w-full min-h-[48px] px-4 rounded-xl bg-[#181825] border border-[#f9e2af]/45 hover:border-[#f9e2af] flex items-center gap-3 text-sm font-semibold text-[#f9e2af] cursor-pointer"
+                  >
+                    <Sliders className="w-4 h-4" />
+                    <span>Réglages Voix off, Micro & Sous-titres</span>
+                  </button>
+                )}
+
                 <a
                   href={activeVideo.data}
                   download={`${activeVideo.name}.mp4`}
@@ -902,6 +1227,63 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
         </button>
       </div>
 
+      {/* Barre de recherche et filtres de catégorie */}
+      {projectNames.length > 0 && (
+        <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-3 space-y-2.5">
+          <div className="relative">
+            <Search className="w-4 h-4 text-[#a6adc8] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={hubSearchQuery}
+              onChange={(e) => setHubSearchQuery(e.target.value)}
+              placeholder="Rechercher un projet, audio, script ou vidéo..."
+              aria-label="Rechercher dans la bibliothèque"
+              className="w-full min-h-[44px] pl-10 pr-10 py-2 rounded-xl bg-[#181825] border border-[#313244] focus:border-[#89b4fa] focus:outline-none text-xs sm:text-sm text-[#cdd6f4] placeholder:text-[#6c7086]"
+            />
+            {hubSearchQuery && (
+              <button
+                type="button"
+                onClick={() => setHubSearchQuery('')}
+                aria-label="Effacer la recherche"
+                className="absolute right-2 top-1/2 -translate-y-1/2 min-h-[32px] min-w-[32px] rounded-lg flex items-center justify-center text-[#a6adc8] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            {(
+              [
+                { id: 'all', label: 'Tous', count: categoryTotals.all, icon: null },
+                { id: 'audios', label: 'Audio', count: categoryTotals.audios, icon: Music },
+                { id: 'texts', label: 'Script', count: categoryTotals.texts, icon: FileText },
+                { id: 'videos', label: 'Vidéo', count: categoryTotals.videos, icon: Film },
+              ] as const
+            ).map((cat) => {
+              const Icon = cat.icon;
+              const isSelected = hubCategoryFilter === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setHubCategoryFilter(cat.id)}
+                  className={`min-h-[38px] px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap border ${
+                    isSelected
+                      ? 'bg-[#89b4fa] text-[#11111b] border-[#89b4fa]'
+                      : 'bg-[#181825] text-[#a6adc8] border-[#313244] hover:text-[#cdd6f4] hover:border-[#45475a]'
+                  }`}
+                >
+                  {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
+                  <span>{cat.label}</span>
+                  <span className="tabular-nums opacity-80">({cat.count})</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Grille des projets (format cohérent avec HomeHubView) */}
       {projectNames.length === 0 ? (
         <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-8 text-center space-y-2">
@@ -911,10 +1293,27 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
             Créez votre premier projet ou enregistrez une piste depuis le studio.
           </p>
         </div>
+      ) : filteredHubProjects.length === 0 ? (
+        <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-8 text-center space-y-3">
+          <Search className="w-8 h-8 text-[#6c7086] mx-auto" />
+          <p className="text-sm font-medium text-[#cdd6f4]">Aucun résultat trouvé</p>
+          <p className="text-xs text-[#a6adc8]">
+            Essayez un autre mot-clé ou réinitialisez le filtre de catégorie.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setHubSearchQuery('');
+              setHubCategoryFilter('all');
+            }}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] text-xs font-semibold cursor-pointer"
+          >
+            Réinitialiser les filtres
+          </button>
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {projectNames.map((proj) => {
-            const pData = library[proj];
+          {filteredHubProjects.map(({ proj, pData, matchCount }) => {
             const audioCount = pData.audios.length;
             const textCount = pData.texts.length;
             const videoCount = pData.videos?.length || 0;
@@ -936,6 +1335,11 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                       {audioCount} audio{audioCount > 1 ? 's' : ''} · {textCount} script
                       {textCount > 1 ? 's' : ''} · {videoCount} vidéo{videoCount > 1 ? 's' : ''}
                     </div>
+                    {hubSearchQuery.trim() && matchCount > 0 && (
+                      <div className="text-[11px] text-[#a6e3a1] font-medium tabular-nums mt-0.5">
+                        {matchCount} correspondance{matchCount > 1 ? 's' : ''}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-[#6c7086] group-hover:text-[#cdd6f4] transition-colors shrink-0" />

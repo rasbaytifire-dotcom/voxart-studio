@@ -8,7 +8,7 @@ import {
   Folder, FolderPlus, FolderTree, ChevronRight, ChevronDown, 
   Calendar, Tag, Search, ArrowLeft, Move, Plus, Trash2, Edit3, 
   Share2, Package, Save, Upload, Copy, Check, Volume2, Download, 
-  Mic, Play, Disc, Filter, ArrowUpDown, X, Sparkles, FileText, CheckCircle2
+  Mic, Play, Disc, Filter, ArrowUpDown, X, Sparkles, FileText, CheckCircle2, Film
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -58,6 +58,13 @@ interface LibraryManagerProps {
   setStudioComposition?: (comp: any) => void;
   setActiveVideoModal?: (v: { title: string; url: string } | null) => void;
   generateSRT: (text: string) => string;
+  onOpenProjectVideoStudio?: (options: {
+    projectName: string;
+    videoItem?: SavedVideoItem | null;
+    textItem?: SavedTextItem | null;
+    audioItem?: SavedAudioItem | null;
+    focusSection?: 'subtitles' | 'voiceover' | 'mic';
+  }) => void;
 }
 
 export const PRESET_CATEGORIES = [
@@ -84,7 +91,8 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
   onImportJson,
   setStudioComposition,
   setActiveVideoModal,
-  generateSRT
+  generateSRT,
+  onOpenProjectVideoStudio
 }) => {
   // Navigation & View Mode: 'folders' (nested), 'categories' (category grouped), 'dates' (chronological)
   const [viewMode, setViewMode] = useState<'folders' | 'categories' | 'dates'>('folders');
@@ -683,52 +691,80 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
       </div>
 
       {/* Search & Volume Filter Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-        <div className="sm:col-span-6 relative">
-          <Search className="w-4 h-4 text-[#a6adc8] absolute left-3 top-3" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher un projet, audio, script..."
-            className="w-full pl-9 pr-8 py-2 rounded-xl bg-[#181825] border border-[#313244] text-[#cdd6f4] text-xs focus:outline-none focus:border-[#89b4fa]"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-2.5 text-[#a6adc8] hover:text-white"
+      <div className="space-y-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+          <div className="sm:col-span-6 relative">
+            <Search className="w-4 h-4 text-[#a6adc8] absolute left-3 top-3" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Rechercher un projet, audio, script..."
+              className="w-full pl-9 pr-8 py-2 rounded-xl bg-[#181825] border border-[#313244] text-[#cdd6f4] text-xs focus:outline-none focus:border-[#89b4fa]"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-2.5 text-[#a6adc8] hover:text-white cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="sm:col-span-3 flex items-center gap-1 bg-[#181825] border border-[#313244] rounded-xl px-2">
+            <Filter className="w-3.5 h-3.5 text-[#89b4fa] shrink-0" />
+            <select
+              value={selectedFilterType}
+              onChange={(e: any) => setSelectedFilterType(e.target.value)}
+              className="w-full bg-transparent text-xs text-[#cdd6f4] py-2 focus:outline-none"
             >
-              <X className="w-3.5 h-3.5" />
+              <option value="all">Tous les formats</option>
+              <option value="audios">🎵 Audios uniquement</option>
+              <option value="texts">📜 Textes / Scripts</option>
+              <option value="videos">🎬 Vidéos (9:16)</option>
+            </select>
+          </div>
+
+          <div className="sm:col-span-3 flex items-center gap-1 bg-[#181825] border border-[#313244] rounded-xl px-2">
+            <ArrowUpDown className="w-3.5 h-3.5 text-[#89b4fa] shrink-0" />
+            <select
+              value={sortBy}
+              onChange={(e: any) => setSortBy(e.target.value)}
+              className="w-full bg-transparent text-xs text-[#cdd6f4] py-2 focus:outline-none"
+            >
+              <option value="recent">Plus récent</option>
+              <option value="oldest">Plus ancien</option>
+              <option value="az">Alphabétique (A-Z)</option>
+              <option value="count">Nombre de fichiers</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Boutons rapides de filtre par catégorie */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+          {(
+            [
+              { id: 'all', label: 'Tous' },
+              { id: 'audios', label: 'Audio' },
+              { id: 'texts', label: 'Script' },
+              { id: 'videos', label: 'Vidéo' },
+            ] as const
+          ).map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setSelectedFilterType(cat.id)}
+              className={`py-1.5 px-3 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                selectedFilterType === cat.id
+                  ? 'bg-[#89b4fa] text-[#11111b] border-[#89b4fa] font-bold'
+                  : 'bg-[#181825] text-[#a6adc8] border-[#313244] hover:text-[#cdd6f4]'
+              }`}
+            >
+              {cat.label}
             </button>
-          )}
-        </div>
-
-        <div className="sm:col-span-3 flex items-center gap-1 bg-[#181825] border border-[#313244] rounded-xl px-2">
-          <Filter className="w-3.5 h-3.5 text-[#89b4fa] shrink-0" />
-          <select
-            value={selectedFilterType}
-            onChange={(e: any) => setSelectedFilterType(e.target.value)}
-            className="w-full bg-transparent text-xs text-[#cdd6f4] py-2 focus:outline-none"
-          >
-            <option value="all">Tous les formats</option>
-            <option value="audios">🎵 Audios uniquement</option>
-            <option value="texts">📜 Textes / Scripts</option>
-            <option value="videos">🎬 Vidéos (9:16)</option>
-          </select>
-        </div>
-
-        <div className="sm:col-span-3 flex items-center gap-1 bg-[#181825] border border-[#313244] rounded-xl px-2">
-          <ArrowUpDown className="w-3.5 h-3.5 text-[#89b4fa] shrink-0" />
-          <select
-            value={sortBy}
-            onChange={(e: any) => setSortBy(e.target.value)}
-            className="w-full bg-transparent text-xs text-[#cdd6f4] py-2 focus:outline-none"
-          >
-            <option value="recent">Plus récent</option>
-            <option value="oldest">Plus ancien</option>
-            <option value="az">Alphabétique (A-Z)</option>
-            <option value="count">Nombre de fichiers</option>
-          </select>
+          ))}
         </div>
       </div>
 
@@ -1090,8 +1126,35 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
 
   // Helper renderer for a single Project Card
   function renderProjectCard(proj: string, pData: ProjectData) {
-    const currentCatObj = PRESET_CATEGORIES.find(c => c.id === pData.category) || PRESET_CATEGORIES[0];
     const folderDisplay = normalizePath(pData.folderPath || '') || 'Racine';
+    const q = searchQuery.trim().toLowerCase();
+    const projectMetaMatch =
+      !q ||
+      proj.toLowerCase().includes(q) ||
+      (pData.category || '').toLowerCase().includes(q) ||
+      (pData.folderPath || '').toLowerCase().includes(q);
+
+    const visibleAudios = (pData.audios || [])
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => !q || projectMetaMatch || item.name.toLowerCase().includes(q));
+    const visibleTexts = (pData.texts || [])
+      .map((item, idx) => ({ item, idx }))
+      .filter(
+        ({ item }) =>
+          !q ||
+          projectMetaMatch ||
+          item.name.toLowerCase().includes(q) ||
+          item.content.toLowerCase().includes(q)
+      );
+    const visibleVideos = (pData.videos || [])
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => !q || projectMetaMatch || item.name.toLowerCase().includes(q));
+
+    const showAudiosSection = selectedFilterType === 'all' || selectedFilterType === 'audios';
+    const showTextsSection = selectedFilterType === 'all' || selectedFilterType === 'texts';
+    const showVideosSection =
+      (selectedFilterType === 'all' || selectedFilterType === 'videos') &&
+      visibleVideos.length > 0;
 
     return (
       <div key={proj} className="bg-[#181825] p-4 rounded-xl border border-[#313244] hover:border-[#45475a] space-y-3 shadow-md transition-all">
@@ -1121,6 +1184,26 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
+            {onOpenProjectVideoStudio && (
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenProjectVideoStudio({
+                    projectName: proj,
+                    videoItem: pData.videos?.[0] || null,
+                    textItem: pData.texts?.[0] || null,
+                    audioItem: pData.audios?.[0] || null,
+                    focusSection: 'subtitles',
+                  })
+                }
+                className="px-2.5 py-1 rounded bg-[#a6e3a1] hover:opacity-90 text-[#11111b] text-xs font-bold flex items-center gap-1 cursor-pointer"
+                title="Réglages Voix off, Micro & Sous-titres"
+              >
+                <Film className="w-3 h-3" />
+                <span>Voix Off & Sous-titres</span>
+              </button>
+            )}
+
             {/* Move to folder */}
             <button
               onClick={() => {
@@ -1201,17 +1284,18 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
         </div>
 
         {/* Audios List */}
+        {showAudiosSection && (
         <div className="space-y-1.5">
           <div className="text-xs font-semibold text-[#f9e2af] flex items-center gap-1">
             <span>🎵 Fichiers Audio (.mp3 / .wav) :</span>
-            <span className="text-[10px] text-[#a6adc8] font-mono">({pData.audios?.length || 0})</span>
+            <span className="text-[10px] text-[#a6adc8] font-mono">({visibleAudios.length})</span>
           </div>
 
-          {!pData.audios || pData.audios.length === 0 ? (
-            <div className="text-[11px] text-[#6c7086] pl-2">Aucun audio enregistré.</div>
+          {visibleAudios.length === 0 ? (
+            <div className="text-[11px] text-[#6c7086] pl-2">Aucun audio correspondant.</div>
           ) : (
             <div className="space-y-1">
-              {pData.audios.map((item, idx) => {
+              {visibleAudios.map(({ item, idx }) => {
                 const isRhythm = item.name.includes('[Rythme]');
                 return (
                   <div
@@ -1304,16 +1388,18 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* Texts List */}
+        {showTextsSection && (
         <div className="space-y-1.5 pt-1">
           <div className="flex items-center justify-between pb-0.5">
             <div className="text-xs font-semibold text-[#f9e2af] flex items-center gap-1">
               <span>📜 Scripts & Textes (.txt / .srt) :</span>
-              <span className="text-[10px] text-[#a6adc8] font-mono">({pData.texts?.length || 0})</span>
+              <span className="text-[10px] text-[#a6adc8] font-mono">({visibleTexts.length})</span>
             </div>
 
-            {pData.texts?.length > 0 && (
+            {visibleTexts.length > 0 && (
               <button
                 onClick={async () => {
                   const allText = pData.texts
@@ -1340,11 +1426,11 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
             )}
           </div>
 
-          {!pData.texts || pData.texts.length === 0 ? (
-            <div className="text-[11px] text-[#6c7086] pl-2">Aucun texte enregistré.</div>
+          {visibleTexts.length === 0 ? (
+            <div className="text-[11px] text-[#6c7086] pl-2">Aucun texte correspondant.</div>
           ) : (
             <div className="space-y-1.5">
-              {pData.texts.map((item, idx) => {
+              {visibleTexts.map(({ item, idx }) => {
                 const cleanExcerpt = (
                   item.content.includes('----------------------------------------\n\n')
                     ? item.content.split('----------------------------------------\n\n')[1]
@@ -1442,17 +1528,18 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* Videos List (9:16 animations & Google Flow prompts) */}
-        {pData.videos && pData.videos.length > 0 && (
+        {showVideosSection && (
           <div className="space-y-1.5 pt-1">
             <div className="text-xs font-semibold text-[#89b4fa] flex items-center gap-1">
               <span>🎬 Prompts & Médias Vidéo (9:16) :</span>
-              <span className="text-[10px] text-[#a6adc8] font-mono">({pData.videos.length})</span>
+              <span className="text-[10px] text-[#a6adc8] font-mono">({visibleVideos.length})</span>
             </div>
 
             <div className="space-y-1">
-              {pData.videos.map((vid, vIdx) => (
+              {visibleVideos.map(({ item: vid, idx: vIdx }) => (
                 <div key={vid.id} className="bg-[#1e1e2e] p-2 rounded-lg text-xs flex items-center justify-between gap-2 border border-[#313244]">
                   <span className="truncate font-semibold text-[#cdd6f4]">🎬 {vid.name}</span>
                   <div className="flex items-center gap-1">

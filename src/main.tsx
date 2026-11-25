@@ -2,7 +2,6 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
-import { registerSW } from 'virtual:pwa-register';
 
 // Defensive prototype safeguard: clamp volume property on all HTMLMediaElements to [0, 1]
 // to prevent browser IndexSizeError if any component, slider, or preset passes > 1 or < 0

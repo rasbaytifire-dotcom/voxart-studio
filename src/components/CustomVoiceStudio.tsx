@@ -203,10 +203,13 @@ export const CustomVoiceStudio: React.FC<CustomVoiceStudioProps> = ({
         });
       }, 1000);
     } catch (err: any) {
-      const msg =
-        err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
-          ? "Autorisation microphone refusée. Vous pouvez autoriser le micro ou importer un fichier audio."
-          : "Impossible d'accéder au microphone sur cet appareil. Importez un fichier audio à la place.";
+      const isDenied =
+        err?.name === 'NotAllowedError' ||
+        err?.name === 'PermissionDeniedError' ||
+        (typeof err?.message === 'string' && err.message.toLowerCase().includes('permission'));
+      const msg = isDenied
+        ? "Autorisation microphone refusée par le navigateur ou l'appareil. Activez l'accès au micro dans les paramètres du site (icône 🔒) ou les autorisations Android, rechargez la page, ou utilisez « Importer un audio »."
+        : "Impossible d'accéder au microphone sur cet appareil. Utilisez « Importer un audio » pour charger un fichier ou un mémo vocal.";
       setMicError(msg);
       showToast(msg, 'warning');
     }
@@ -332,7 +335,8 @@ export const CustomVoiceStudio: React.FC<CustomVoiceStudioProps> = ({
       const binary = atob(data.audio);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'audio/mp3' });
+      const isRiffWav = bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+      const blob = new Blob([bytes], { type: isRiffWav ? 'audio/wav' : 'audio/mp3' });
       const url = URL.createObjectURL(blob);
       if (previewAudioUrl) URL.revokeObjectURL(previewAudioUrl);
       setPreviewAudioUrl(url);
