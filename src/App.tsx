@@ -3,33 +3,59 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { 
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
-  Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
+  Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, ArrowLeft, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
   Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film
 } from 'lucide-react';
 import JSZip from 'jszip';
-import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { useHashRouter } from './hooks/useHashRouter';
+import { AppRouteId, InterfaceMode, ROUTE_TITLES } from './types/navigation';
+import { HomeHubView } from './components/HomeHubView';
+import { LibraryHubView } from './components/LibraryHubView';
+import { AboutPage, AboutSubRouteId } from './components/AboutPage';
+import { VocalSingleMinimalView } from './components/VocalSingleMinimalView';
+import { CustomVoiceStudio } from './components/CustomVoiceStudio';
+import { CustomVoiceProfile } from './types/voiceProfile';
+import {
+  extractCustomVoiceId,
+  isCustomVoiceId,
+  loadLocalCustomVoices,
+  resolveVoicePayloadForTTS,
+  saveLocalCustomVoices,
+  syncCustomVoicesFromCloud,
+  syncCustomVoicesToCloud,
+  toCustomVoiceOptionId,
+} from './utils/customVoiceStorage';
+import { AppearanceSettingsPanel } from './components/AppearanceSettingsPanel';
+import {
+  AppearanceConfig,
+  BUILTIN_WALLPAPERS,
+  DEFAULT_APPEARANCE_CONFIG,
+  WallpaperPreset,
+} from './types/appearance';
 import { useAppUpdate, TopBarUpdateButton, UpdateSettingsSection } from './components/UpdateManager';
 import { ThemeModeSelector, StudioThemeMode } from './components/ThemeModeSelector';
 import { PlasticSynesthesiaCanvas } from './components/PlasticSynesthesiaCanvas';
 import { PolyrhythmicEngine } from './components/PolyrhythmicEngine';
-import { AfricanRhythmStudio } from './components/AfricanRhythmStudio';
 import { AIAgentChat } from './components/AIAgentChat';
 import { RhythmComposition } from './types/rhythm';
 import studioLogo from './assets/images/voxart_logo_1791875178885.jpg';
 import { db, ensureAuth } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { audioBufferToWavBlob } from './utils/audioExport';
+import { audioBufferToWavBlob, exportAudioDataAsWav } from './utils/audioExport';
 import { createBroadcastEQChain } from './utils/audioDuckingEngine';
 import { saveAudioBlob, saveProjectOffline, getAllProjectsOffline } from './utils/indexedDBStorage';
+import type { BackingTrackInfo } from './components/BackgroundMusicStudio';
+
+import { AfricanRhythmStudio } from './components/AfricanRhythmStudio';
 import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
 import { UnifiedStudioWorkspace } from './components/UnifiedStudioWorkspace';
-import { LibraryManager } from './components/LibraryManager';
-import { BackgroundMusicStudio, BackingTrackInfo } from './components/BackgroundMusicStudio';
+import { BackgroundMusicStudio } from './components/BackgroundMusicStudio';
 import { TranscriptionStudio } from './components/TranscriptionStudio';
 import { 
   TRADITIONAL_RHYTHM_PRESETS, 
@@ -196,7 +222,13 @@ function formatSRTTime(seconds: number): string {
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings'>('home');
+  const { route: hashRoute, navigate: navigateHash } = useHashRouter('home');
+  const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => {
+    const saved = localStorage.getItem('voxart_interface_mode');
+    return saved === 'classic' ? 'classic' : 'hub';
+  });
+  const [currentView, setCurrentViewState] = useState<'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings' | 'about' | 'custom_voice'>('home');
+  const [aboutClassicRoute, setAboutClassicRoute] = useState<AboutSubRouteId>('about');
   const [studioComposition, setStudioComposition] = useState<RhythmComposition | undefined>(undefined);
   const [activeBackingTrack, setActiveBackingTrack] = useState<BackingTrackInfo | null>(null);
   const [isBackingTrackPlaying, setIsBackingTrackPlaying] = useState<boolean>(false);
@@ -206,6 +238,76 @@ export default function App() {
   const [themeMode, setThemeMode] = useState<StudioThemeMode>(() => {
     return (localStorage.getItem('ridialart_studio_theme') as StudioThemeMode) || 'ridialart';
   });
+
+  // Visual Theme & Wallpaper state (Noir & Or RidiaLArt / Ardoise / Indigo + Fond d'écran)
+  const [appearanceConfig, setAppearanceConfig] = useState<AppearanceConfig>(() => {
+    try {
+      const raw = localStorage.getItem('voxart_appearance_config');
+      if (raw) {
+        return { ...DEFAULT_APPEARANCE_CONFIG, ...JSON.parse(raw) };
+      }
+    } catch {
+      // ignore parse errors
+    }
+    return DEFAULT_APPEARANCE_CONFIG;
+  });
+
+  const [customWallpapers, setCustomWallpapers] = useState<WallpaperPreset[]>(() => {
+    try {
+      const raw = localStorage.getItem('voxart_custom_wallpapers');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore parse errors
+    }
+    return [];
+  });
+
+  const handleUpdateAppearanceConfig = (next: AppearanceConfig) => {
+    setAppearanceConfig(next);
+    try {
+      localStorage.setItem('voxart_appearance_config', JSON.stringify(next));
+    } catch {
+      // ignore quota errors
+    }
+  };
+
+  const handleAddCustomWallpaper = (item: WallpaperPreset) => {
+    setCustomWallpapers((prev) => {
+      const nextList = [item, ...prev].slice(0, 6);
+      try {
+        localStorage.setItem('voxart_custom_wallpapers', JSON.stringify(nextList));
+      } catch {
+        showToast("Espace de stockage limité : ancien fond personnel non conservé.", "info");
+      }
+      return nextList;
+    });
+  };
+
+  const handleRemoveCustomWallpaper = (id: string) => {
+    setCustomWallpapers((prev) => {
+      const nextList = prev.filter((w) => w.id !== id);
+      try {
+        localStorage.setItem('voxart_custom_wallpapers', JSON.stringify(nextList));
+      } catch {
+        // ignore
+      }
+      return nextList;
+    });
+    if (appearanceConfig.wallpaperId === id) {
+      handleUpdateAppearanceConfig({ ...appearanceConfig, wallpaperId: 'none' });
+    }
+  };
+
+  const activeWallpaperUrl =
+    appearanceConfig.wallpaperId !== 'none'
+      ? [...BUILTIN_WALLPAPERS, ...customWallpapers].find(
+          (w) => w.id === appearanceConfig.wallpaperId
+        )?.url || null
+      : null;
+
   const [isAudioPlaying, setIsAudioPlaying] = useState<boolean>(false);
 
   const handleSelectThemeMode = (mode: StudioThemeMode) => {
@@ -237,6 +339,7 @@ export default function App() {
   const [style, setStyle] = useState(() => initialPresetRef.current?.style || (stylesMap[initialPresetRef.current?.domain || 'art'] || stylesMap.art)[0].val);
   const [gender, setGender] = useState(() => initialPresetRef.current?.gender || 'voix masculine grave, profonde et résonnante (homme)');
   const [voiceName, setVoiceName] = useState(() => initialPresetRef.current?.voiceName || 'Kore');
+  const [customVoices, setCustomVoices] = useState<CustomVoiceProfile[]>(() => loadLocalCustomVoices());
   const [model, setModel] = useState(() => initialPresetRef.current?.model || 'gemini-3.8-flash-lite-tts');
   const { apiKey, setApiKey, isValidKey, backendStatus } = useApiAuth();
   const [isLiveMixPlaying, setIsLiveMixPlaying] = useState<boolean>(false);
@@ -407,6 +510,70 @@ export default function App() {
     }
   }, [backingVolume]);
 
+  // Sync custom personalized voices from cloud on startup
+  useEffect(() => {
+    let active = true;
+    syncCustomVoicesFromCloud().then((cloudProfiles) => {
+      if (!active || !cloudProfiles || cloudProfiles.length === 0) return;
+      setCustomVoices((prev) => {
+        const mergedMap = new Map<string, CustomVoiceProfile>();
+        [...cloudProfiles, ...prev].forEach((p) => {
+          const existing = mergedMap.get(p.id);
+          if (!existing || (p.updatedAt || '') > (existing.updatedAt || '')) {
+            mergedMap.set(p.id, p);
+          }
+        });
+        const merged = Array.from(mergedMap.values());
+        saveLocalCustomVoices(merged);
+        return merged;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSelectVoiceName = (nextVoiceId: string, explicitPitch?: number) => {
+    setVoiceName(nextVoiceId);
+    if (typeof explicitPitch === 'number') {
+      setVoicePitch(explicitPitch);
+      return;
+    }
+    if (isCustomVoiceId(nextVoiceId)) {
+      const profile = customVoices.find((cv) => cv.id === extractCustomVoiceId(nextVoiceId));
+      if (profile) {
+        setVoicePitch(profile.pitch);
+      }
+    }
+  };
+
+  const handleSaveCustomVoiceProfile = (profile: CustomVoiceProfile, activateImmediately = true) => {
+    setCustomVoices((prev) => {
+      const idx = prev.findIndex((p) => p.id === profile.id);
+      const next = idx >= 0
+        ? prev.map((p, i) => (i === idx ? profile : p))
+        : [profile, ...prev];
+      saveLocalCustomVoices(next);
+      syncCustomVoicesToCloud(next);
+      return next;
+    });
+    if (activateImmediately) {
+      handleSelectVoiceName(toCustomVoiceOptionId(profile.id), profile.pitch);
+    }
+  };
+
+  const handleDeleteCustomVoiceProfile = (profileId: string) => {
+    setCustomVoices((prev) => {
+      const next = prev.filter((p) => p.id !== profileId);
+      saveLocalCustomVoices(next);
+      syncCustomVoicesToCloud(next);
+      return next;
+    });
+    if (voiceName === toCustomVoiceOptionId(profileId)) {
+      setVoiceName('Kore');
+    }
+  };
+
   // Real-time pitch control on the generated speech audio element
   useEffect(() => {
     if (audioRef.current) {
@@ -569,7 +736,103 @@ export default function App() {
   const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
 
   // Batch & Workspace State
-  const [homeMode, setHomeMode] = useState<'single' | 'batch' | 'workspace' | 'transcription' | 'video_dubbing'>('single');
+  const [homeMode, setHomeModeState] = useState<'single' | 'batch' | 'workspace' | 'transcription' | 'video_dubbing'>('single');
+
+  const handleSetInterfaceMode = (mode: InterfaceMode) => {
+    setInterfaceModeState(mode);
+    localStorage.setItem('voxart_interface_mode', mode);
+    showToast(
+      mode === 'hub'
+        ? 'Interface Nouveau Hub Épuré activée.'
+        : 'Interface Mode Classique restaurée.',
+      'info'
+    );
+  };
+
+  const resolveRouteFromView = (
+    view: 'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings' | 'about' | 'custom_voice',
+    mode: 'single' | 'batch' | 'workspace' | 'transcription' | 'video_dubbing'
+  ): AppRouteId => {
+    if (view === 'rhythm_studio') return 'music_rhythm';
+    if (view === 'library') return 'library';
+    if (view === 'knowledge_base') return 'ai_knowledge';
+    if (view === 'settings') return 'settings';
+    if (view === 'about') return 'about';
+    if (view === 'custom_voice') return 'vocal_voice_custom';
+    if (mode === 'batch') return 'vocal_batch';
+    if (mode === 'workspace') return 'ai_assistant';
+    if (mode === 'transcription') return 'video_transcription';
+    if (mode === 'video_dubbing') return 'video_dubbing';
+    return 'home';
+  };
+
+  const setCurrentView = (view: 'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings' | 'about' | 'custom_voice') => {
+    setCurrentViewState(view);
+    navigateHash(resolveRouteFromView(view, homeMode));
+  };
+
+  const setHomeMode = (mode: 'single' | 'batch' | 'workspace' | 'transcription' | 'video_dubbing') => {
+    setHomeModeState(mode);
+    if (interfaceMode === 'hub' && mode === 'single') {
+      navigateHash('vocal_single');
+      return;
+    }
+    navigateHash(resolveRouteFromView('home', mode));
+  };
+
+  useEffect(() => {
+    switch (hashRoute) {
+      case 'music_rhythm':
+        setCurrentViewState('rhythm_studio');
+        break;
+      case 'library':
+        setCurrentViewState('library');
+        break;
+      case 'ai_knowledge':
+        setCurrentViewState('knowledge_base');
+        break;
+      case 'settings':
+        setCurrentViewState('settings');
+        break;
+      case 'vocal_voice_custom':
+        setCurrentViewState('custom_voice');
+        break;
+      case 'about':
+      case 'about_vision':
+      case 'about_artist':
+      case 'about_gallery':
+      case 'about_writings':
+        setCurrentViewState('about');
+        break;
+      case 'vocal_batch':
+        setCurrentViewState('home');
+        setHomeModeState('batch');
+        break;
+      case 'ai_assistant':
+        setCurrentViewState('home');
+        setHomeModeState('workspace');
+        break;
+      case 'video_transcription':
+        setCurrentViewState('home');
+        setHomeModeState('transcription');
+        break;
+      case 'video_dubbing':
+        setCurrentViewState('home');
+        setHomeModeState('video_dubbing');
+        break;
+      case 'music_mixer':
+        setCurrentViewState('home');
+        setHomeModeState('single');
+        setShowMixer(true);
+        break;
+      case 'vocal_single':
+      case 'home':
+      default:
+        setCurrentViewState('home');
+        setHomeModeState('single');
+        break;
+    }
+  }, [hashRoute]);
   const [preloadedVideoFile, setPreloadedVideoFile] = useState<File | null>(null);
   const homeVideoInputRef = useRef<HTMLInputElement | null>(null);
   const [batchRawText, setBatchRawText] = useState('');
@@ -588,15 +851,15 @@ export default function App() {
   interface ToastItem {
     id: number;
     message: string;
-    type: 'success' | 'error' | 'info';
+    type: 'success' | 'error' | 'info' | 'warning';
   }
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+  const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
-    }, 4000);
+    }, 4500);
   };
 
   const appUpdate = useAppUpdate((msg, type) => showToast(msg, type || 'info'));
@@ -868,7 +1131,11 @@ export default function App() {
     localStorage.setItem('voxart_autosave_text', cleanedText);
 
     // Switch view directly to Studio Vocal (single mode)
-    setHomeMode('single');
+    if (interfaceMode === 'hub') {
+      navigateHash('vocal_single');
+    } else {
+      setHomeMode('single');
+    }
 
     // Match explicit tone with stylesMap
     let toneApplied = false;
@@ -1015,6 +1282,8 @@ export default function App() {
     }
 
     const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
+    const resolvedVoice = resolveVoicePayloadForTTS(voiceName, customVoices, model, gender, style);
+    const effectivePlaybackPitch = resolvedVoice.pitchOverride ?? voicePitch;
     try {
       const response = await fetchWithExponentialBackoff('/api/tts', {
         method: 'POST',
@@ -1023,11 +1292,12 @@ export default function App() {
         },
         body: JSON.stringify({
           text: sanitizedText,
-          voiceName,
-          model,
+          voiceName: resolvedVoice.voiceName,
+          model: resolvedVoice.model,
           language,
-          gender,
-          style,
+          gender: resolvedVoice.gender,
+          style: resolvedVoice.style,
+          customVoiceStyle: resolvedVoice.customVoiceStyle,
           apiKey: effectiveKey
         })
       }, 3, effectiveKey);
@@ -1035,14 +1305,26 @@ export default function App() {
       const data = await response.json();
       if (data.fallback || data.isKeyError || !response.ok) {
         console.warn("Gemini TTS fallback:", data.message || data.error);
-        handleBrowserSpeechFallback(textToRead);
-        setStatusMsg("Lecture vocale via la synthèse locale du navigateur active. Configurez votre clé API Gemini dans les Paramètres pour les voix HD.");
+        const hasBrowserSpeech = typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis;
+        if (hasBrowserSpeech) {
+          handleBrowserSpeechFallback(textToRead);
+          setStatusMsg("Lecture vocale via la synthèse du navigateur active. Configurez votre clé API Gemini dans les Paramètres pour les voix HD.");
+        } else {
+          showToast(data.message || "Connexion requise ou clé API Gemini à configurer dans les Réglages pour les voix HD.", "warning");
+          setStatusMsg("⚠️ Voix HD indisponibles sans connexion active ou clé API Gemini.");
+        }
         return;
       }
 
       if (!data.audio) {
-        handleBrowserSpeechFallback(textToRead);
-        setStatusMsg("Lecture vocale via la synthèse locale du navigateur active.");
+        const hasBrowserSpeech = typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis;
+        if (hasBrowserSpeech) {
+          handleBrowserSpeechFallback(textToRead);
+          setStatusMsg("Lecture vocale via la synthèse du navigateur active.");
+        } else {
+          showToast("Aucun flux audio reçu du serveur. Vérifiez votre connexion Internet.", "warning");
+          setStatusMsg("⚠️ Flux audio introuvable. Vérifiez votre connexion.");
+        }
         return;
       }
 
@@ -1059,13 +1341,18 @@ export default function App() {
         setTestAudioUrl(audioUrl);
         if (testAudioRef.current) {
           testAudioRef.current.src = audioUrl;
+          testAudioRef.current.playbackRate = effectivePlaybackPitch;
           testAudioRef.current.play().catch(() => {});
         }
       } else {
         setCurrentAudioBlob(blob);
         setCurrentAudioUrl(audioUrl);
         setShowSaveSection(true);
-        setStatusMsg("Aperçu généré avec succès ! Écoutez ou ajustez les curseurs ci-dessous :");
+        setStatusMsg(
+          resolvedVoice.activeCustomProfile
+            ? `Aperçu généré avec votre voix "${resolvedVoice.activeCustomProfile.name}" !`
+            : "Aperçu généré avec succès ! Écoutez ou ajustez les curseurs ci-dessous :"
+        );
 
         const audioEl = new Audio(audioUrl);
         audioEl.onloadedmetadata = () => {
@@ -1077,7 +1364,7 @@ export default function App() {
 
         if (audioRef.current) {
           audioRef.current.src = audioUrl;
-          audioRef.current.playbackRate = voicePitch;
+          audioRef.current.playbackRate = effectivePlaybackPitch;
           audioRef.current.play().catch(() => {});
         }
 
@@ -1090,15 +1377,26 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      console.warn("TTS generation warning, using browser speech fallback:", err);
-      handleBrowserSpeechFallback(textToRead);
-      const msg = err.message || "";
-      if (msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
-        setIsQuotaError(true);
-        setRetryCountdown(30);
-        setStatusMsg("⚠️ Quota Gemini temporairement atteint. Lecture locale active.");
+      console.warn("TTS generation warning:", err);
+      const hasBrowserSpeech = typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis;
+      const isDeviceOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
+      if (isDeviceOffline) {
+        showToast("Mode hors-ligne : La synthèse vocale IA Gemini HD nécessite une connexion Internet active.", "warning");
+        setStatusMsg("⚠️ Connexion Internet requise : Votre appareil est actuellement hors-ligne.");
+      } else if (hasBrowserSpeech) {
+        handleBrowserSpeechFallback(textToRead);
+        const msg = err.message || "";
+        if (msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
+          setIsQuotaError(true);
+          setRetryCountdown(30);
+          setStatusMsg("⚠️ Quota Gemini temporairement atteint. Lecture de secours du navigateur active.");
+        } else {
+          setStatusMsg("Lecture vocale de secours (navigateur) active.");
+        }
       } else {
-        setStatusMsg("Lecture vocale locale (navigateur) active.");
+        showToast("Connexion Internet requise : La synthèse vocale haute définition s'exécute sur le serveur cloud (l'APK ne dispose pas de moteur vocal local).", "error");
+        setStatusMsg("⚠️ Connexion requise : Impossible de contacter le serveur de voix Gemini.");
       }
     } finally {
       setIsGenerating(false);
@@ -1111,15 +1409,21 @@ export default function App() {
     // Clean asterisks and markdown tokens so browser speech doesn't pronounce "astérisque astérisque"
     const textToSpeak = cleanTextForSpeech(raw);
     if (!textToSpeak) return;
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(textToSpeak);
-      utterance.lang = language === 'Wolof' ? 'fr-FR' : (language === 'Anglais' ? 'en-US' : 'fr-FR');
-      utterance.rate = Math.max(0.7, Math.min(1.4, voicePitch || 1.0));
-      window.speechSynthesis.speak(utterance);
-      setStatusMsg("Lecture de secours via la synthèse vocale du navigateur en cours...");
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        utterance.lang = language === 'Wolof' ? 'fr-FR' : (language === 'Anglais' ? 'en-US' : 'fr-FR');
+        utterance.rate = Math.max(0.7, Math.min(1.4, voicePitch || 1.0));
+        window.speechSynthesis.speak(utterance);
+        setStatusMsg("Lecture de secours via la synthèse vocale du navigateur en cours...");
+      } catch (e) {
+        showToast("Erreur lors de la lecture vocale de secours.", "error");
+        setStatusMsg("Échec de la lecture vocale locale.");
+      }
     } else {
-      showToast("La synthèse vocale du navigateur n'est pas supportée sur cet appareil.", "error");
+      showToast("La synthèse vocale locale n'est pas disponible dans cet environnement APK. Une connexion Internet active est nécessaire pour les voix Gemini HD.", "warning");
+      setStatusMsg("⚠️ Connexion requise pour la synthèse vocale HD (moteur local indisponible dans l'APK).");
     }
   };
 
@@ -1130,6 +1434,78 @@ export default function App() {
     }
     generateTTS(text, false);
   };
+
+  const handleSaveTextDraft = useCallback(() => {
+    try {
+      localStorage.setItem('voxart_autosave_text', text);
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      localStorage.setItem('voxart_autosave_time', timeStr);
+      setLastAutoSaveTime(timeStr);
+      showToast('Brouillon texte sauvegardé localement (Ctrl+S).', 'success');
+    } catch {
+      showToast('Impossible de sauvegarder le brouillon localement.', 'error');
+    }
+  }, [text]);
+
+  const handleToggleGlobalPlayback = useCallback(() => {
+    const audioEl = audioRef.current;
+    if (!audioEl || !currentAudioUrl) return;
+    if (audioEl.paused) {
+      audioEl.play().catch(() => {});
+    } else {
+      audioEl.pause();
+    }
+  }, [currentAudioUrl]);
+
+  const shortcutsRef = useRef({
+    handlePreview: () => {},
+    handleSaveTextDraft: () => {},
+    handleToggleGlobalPlayback: () => {},
+  });
+
+  shortcutsRef.current = {
+    handlePreview,
+    handleSaveTextDraft,
+    handleToggleGlobalPlayback,
+  };
+
+  useEffect(() => {
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tagName = target?.tagName?.toLowerCase();
+      const isEditable =
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select' ||
+        Boolean(target?.isContentEditable);
+
+      // Ctrl/Cmd + Enter -> Trigger vocal generation
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        shortcutsRef.current.handlePreview();
+        return;
+      }
+
+      // Ctrl/Cmd + S -> Save current text draft to localStorage
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        shortcutsRef.current.handleSaveTextDraft();
+        return;
+      }
+
+      // Space -> Play/Pause audio player when not typing in an input/textarea/button
+      if (e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (isEditable || tagName === 'button' || tagName === 'a') return;
+        if (audioRef.current && audioRef.current.src) {
+          e.preventDefault();
+          shortcutsRef.current.handleToggleGlobalPlayback();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+  }, []);
 
   const handleTestVoice = () => {
     generateTTS("Ceci est un test de la voix sélectionnée pour votre projet.", true);
@@ -1736,7 +2112,11 @@ export default function App() {
     setActiveBackingTrack({ url: audioUrl, title });
     setIsBackingTrackPlaying(false);
     showToast(`Boucle de rythme "${title}" chargée comme accompagnement pour le Studio Voix !`, "success");
-    setCurrentView('home');
+    if (interfaceMode === 'hub') {
+      navigateHash('vocal_single');
+    } else {
+      setCurrentView('home');
+    }
   };
 
   const exportProjectAsZip = async (projectName: string, pData: ProjectData) => {
@@ -1975,7 +2355,11 @@ export default function App() {
       ? content.split('----------------------------------------\n\n')[1]
       : content;
     setText(cleanContent || content);
-    setCurrentView('home');
+    if (interfaceMode === 'hub') {
+      navigateHash('vocal_single');
+    } else {
+      setCurrentView('home');
+    }
   };
 
   const playTrimmedSelection = async () => {
@@ -2068,6 +2452,7 @@ export default function App() {
       try {
         const textToRead = cleanTextForSpeech(batchQueue[i].text);
         const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
+        const resolvedBatchVoice = resolveVoicePayloadForTTS(voiceName, customVoices, model, gender, style);
         const response = await fetchWithExponentialBackoff('/api/tts', {
           method: 'POST',
           headers: { 
@@ -2075,11 +2460,12 @@ export default function App() {
           },
           body: JSON.stringify({
             text: textToRead,
-            voiceName,
-            model,
+            voiceName: resolvedBatchVoice.voiceName,
+            model: resolvedBatchVoice.model,
             language,
-            gender,
-            style,
+            gender: resolvedBatchVoice.gender,
+            style: resolvedBatchVoice.style,
+            customVoiceStyle: resolvedBatchVoice.customVoiceStyle,
             apiKey: effectiveKey
           })
         }, 3, effectiveKey);
@@ -2177,6 +2563,7 @@ ${textToRead}`;
     try {
       const sanitizedBatchText = cleanTextForSpeech(item.text);
       const effectiveKey = (apiKey && apiKey.trim()) || apiAuthStore.getKey();
+      const resolvedRetryVoice = resolveVoicePayloadForTTS(voiceName, customVoices, model, gender, style);
       const response = await fetchWithExponentialBackoff('/api/tts', {
         method: 'POST',
         headers: { 
@@ -2184,11 +2571,12 @@ ${textToRead}`;
         },
         body: JSON.stringify({
           text: sanitizedBatchText,
-          voiceName,
-          model,
+          voiceName: resolvedRetryVoice.voiceName,
+          model: resolvedRetryVoice.model,
           language,
-          gender,
-          style,
+          gender: resolvedRetryVoice.gender,
+          style: resolvedRetryVoice.style,
+          customVoiceStyle: resolvedRetryVoice.customVoiceStyle,
           apiKey: effectiveKey
         })
       }, 3, effectiveKey);
@@ -2333,184 +2721,445 @@ ${item.text}`;
   const batchErrorCount = batchQueue.filter(i => i.status === 'error').length;
 
   return (
-    <div className="min-h-screen bg-[#181825] text-[#cdd6f4] flex flex-col font-sans">
+    <div
+      data-visual-theme={appearanceConfig.visualTheme}
+      data-has-wallpaper={activeWallpaperUrl ? 'true' : 'false'}
+      className="min-h-screen relative bg-[#181825] text-[#cdd6f4] flex flex-col font-sans"
+    >
+      {activeWallpaperUrl && (
+        <div aria-hidden="true" className="fixed inset-0 z-0 pointer-events-none">
+          <img
+            src={activeWallpaperUrl}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: `rgba(5, 4, 3, ${appearanceConfig.wallpaperScrim})` }}
+          />
+        </div>
+      )}
       <OfflineIndicator />
 
-      {/* Minimalist Top Bar with Top-Left Section Dropdown */}
-      <div className="flex items-center justify-between px-4 py-2 bg-[#181825]/90 border-b border-[#313244]/40 backdrop-blur-sm sticky top-0 z-40">
-        <div className="flex items-center gap-2">
-          <select
-            value={homeMode === 'video_dubbing' && currentView === 'home' ? 'video_dubbing' : currentView}
-            onChange={(e) => {
-              const val = e.target.value;
-              if (val === 'video_dubbing') {
-                setCurrentView('home');
-                setHomeMode('video_dubbing');
-              } else {
-                setCurrentView(val as any);
-              }
-            }}
-            className="bg-[#1e1e2e] text-[#89b4fa] font-bold text-xs px-3 py-1.5 rounded-xl border border-[#313244] shadow-md focus:outline-none focus:border-[#89b4fa] cursor-pointer"
-            title="Volet déroulant des rubriques"
-          >
-            <option value="home">🏠 Accueil Studio Vocal</option>
-            <option value="video_dubbing">🎬 Doublage Vidéo (Voix Off & Fond Sonore)</option>
-            <option value="rhythm_studio">🥁 Atelier Rythmes</option>
-            <option value="library">📚 Bibliothèque ({Object.keys(library).length})</option>
-            <option value="knowledge_base">📖 Base de Connaissance (RAG)</option>
-            <option value="settings">⚙️ Réglages</option>
-          </select>
-        </div>
+      {/* Top Bar */}
+      {interfaceMode === 'hub' ? (
+        <header className="h-14 flex items-center justify-between gap-4 px-4 bg-[#181825]/95 border-b border-[#313244]/60 backdrop-blur-md sticky top-0 z-40">
+          {hashRoute === 'home' ? (
+            <>
+              <span className="text-base font-bold text-[#cdd6f4] tracking-tight whitespace-nowrap shrink-0">
+                VoxArt
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSelectThemeMode(themeMode === 'ridialart' ? 'standard' : 'ridialart')}
+                  className={`min-h-[38px] px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                    themeMode === 'ridialart'
+                      ? 'bg-[#2d1807] border-[#fbbf24]/50 text-[#fbbf24]'
+                      : 'bg-[#313244] border-[#89b4fa]/40 text-[#89b4fa]'
+                  }`}
+                >
+                  {themeMode === 'ridialart' ? <Sparkles className="w-3.5 h-3.5" /> : <Radio className="w-3.5 h-3.5" />}
+                  <span>{themeMode === 'ridialart' ? 'RidiaLArt' : 'Standard'}</span>
+                </button>
+                <TopBarUpdateButton
+                  onCheck={() => appUpdate.checkForUpdate(true)}
+                  isChecking={appUpdate.isChecking}
+                  hasUpdate={appUpdate.hasUpdate}
+                  onApplyUpdate={appUpdate.applyUpdate}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => navigateHash(hashRoute.startsWith('about_') ? 'about' : 'home')}
+                className="min-h-[40px] px-2.5 py-1.5 rounded-xl bg-[#1e1e2e] border border-[#313244] hover:border-[#89b4fa]/60 text-xs font-semibold text-[#cdd6f4] flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4 text-[#89b4fa]" />
+                <span>{hashRoute.startsWith('about_') ? 'À propos' : 'Accueil'}</span>
+              </button>
+              <span className="text-sm font-semibold text-[#cdd6f4] truncate">
+                {ROUTE_TITLES[hashRoute]}
+              </span>
+              <button
+                type="button"
+                onClick={() => navigateHash(hashRoute === 'settings' ? 'about' : 'settings')}
+                className="min-h-[40px] min-w-[40px] px-2.5 rounded-xl bg-[#1e1e2e] border border-[#313244] hover:border-[#89b4fa]/60 text-[#a6adc8] hover:text-[#cdd6f4] flex items-center justify-center shrink-0 cursor-pointer"
+                title={hashRoute === 'settings' ? 'À propos' : 'Réglages'}
+              >
+                {hashRoute === 'settings' ? <Info className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
+              </button>
+            </>
+          )}
+        </header>
+      ) : (
+        <div className="flex items-center justify-between px-4 py-2 bg-[#181825]/90 border-b border-[#313244]/40 backdrop-blur-sm sticky top-0 z-40">
+          <div className="flex items-center gap-2">
+            <select
+              value={homeMode === 'video_dubbing' && currentView === 'home' ? 'video_dubbing' : currentView}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'video_dubbing') {
+                  setCurrentView('home');
+                  setHomeMode('video_dubbing');
+                } else {
+                  setCurrentView(val as any);
+                }
+              }}
+              className="bg-[#1e1e2e] text-[#89b4fa] font-bold text-xs px-3 py-1.5 rounded-xl border border-[#313244] shadow-md focus:outline-none focus:border-[#89b4fa] cursor-pointer"
+              title="Volet déroulant des rubriques"
+            >
+              <option value="home">🏠 Accueil Studio Vocal</option>
+              <option value="custom_voice">🎙️ Ma Voix Personnalisée ({customVoices.length})</option>
+              <option value="video_dubbing">🎬 Doublage Vidéo (Voix Off & Fond Sonore)</option>
+              <option value="rhythm_studio">🥁 Atelier Rythmes</option>
+              <option value="library">📚 Bibliothèque ({Object.keys(library).length})</option>
+              <option value="knowledge_base">📖 Base de Connaissance (RAG)</option>
+              <option value="about">ℹ️ À propos & Vision</option>
+              <option value="settings">⚙️ Réglages</option>
+            </select>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => handleSelectThemeMode(themeMode === 'ridialart' ? 'standard' : 'ridialart')}
-            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 ${
-              themeMode === 'ridialart'
-                ? 'bg-[#2d1807] border-[#fbbf24]/50 text-[#fbbf24]'
-                : 'bg-[#313244] border-[#89b4fa]/40 text-[#89b4fa]'
-            }`}
-            title="Basculer entre Mode Standard et Mode RidiaLArt"
-          >
-            {themeMode === 'ridialart' ? <Sparkles className="w-3 h-3 text-[#fbbf24]" /> : <Radio className="w-3 h-3 text-[#89b4fa]" />}
-            <span className="hidden sm:inline">{themeMode === 'ridialart' ? 'RidiaLArt' : 'Standard'}</span>
-          </button>
-          <TopBarUpdateButton
-            onCheck={() => appUpdate.checkForUpdate(true)}
-            isChecking={appUpdate.isChecking}
-            hasUpdate={appUpdate.hasUpdate}
-            onApplyUpdate={appUpdate.applyUpdate}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleSelectThemeMode(themeMode === 'ridialart' ? 'standard' : 'ridialart')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 ${
+                themeMode === 'ridialart'
+                  ? 'bg-[#2d1807] border-[#fbbf24]/50 text-[#fbbf24]'
+                  : 'bg-[#313244] border-[#89b4fa]/40 text-[#89b4fa]'
+              }`}
+              title="Basculer entre Mode Standard et Mode RidiaLArt"
+            >
+              {themeMode === 'ridialart' ? <Sparkles className="w-3 h-3 text-[#fbbf24]" /> : <Radio className="w-3 h-3 text-[#89b4fa]" />}
+              <span className="hidden sm:inline">{themeMode === 'ridialart' ? 'RidiaLArt' : 'Standard'}</span>
+            </button>
+            <TopBarUpdateButton
+              onCheck={() => appUpdate.checkForUpdate(true)}
+              isChecking={appUpdate.isChecking}
+              hasUpdate={appUpdate.hasUpdate}
+              onApplyUpdate={appUpdate.applyUpdate}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Synchronisation audio fond sonore en arrière-plan pour toutes les vues */}
+      {activeBackingTrack && (
+        <audio
+          ref={backingAudioRef}
+          src={activeBackingTrack.url}
+          loop
+          onPlay={() => setIsBackingTrackPlaying(true)}
+          onPause={() => setIsBackingTrackPlaying(false)}
+          className="hidden"
+        />
+      )}
+
+      <main className={`relative z-10 flex-1 w-full mx-auto p-4 sm:p-6 transition-all ${
+        interfaceMode === 'hub' && hashRoute === 'home'
+          ? 'max-w-4xl flex flex-col justify-center'
+          : currentView === 'rhythm_studio'
+          ? 'max-w-4xl'
+          : homeMode === 'batch' && currentView === 'home'
+          ? 'max-w-2xl'
+          : interfaceMode === 'hub'
+          ? 'max-w-3xl'
+          : 'max-w-xl'
+      }`}>
+        <Suspense
+          fallback={
+            <div className="w-full py-16 flex flex-col items-center justify-center gap-2 text-xs text-[#a6adc8]">
+              <RefreshCw className="w-5 h-5 animate-spin text-[#89b4fa]" />
+              <span>Chargement du module...</span>
+            </div>
+          }
+        >
+        {/* HUB HOME LAUNCHER */}
+        {interfaceMode === 'hub' && hashRoute === 'home' && (
+          <HomeHubView
+            onNavigate={(r) => navigateHash(r)}
+            themeMode={themeMode}
+            projectCount={Object.keys(library).length}
+            hasDraftText={Boolean(text.trim())}
+            activeBackingTrackTitle={activeBackingTrack?.title || null}
           />
-          <PWAInstallButton />
-        </div>
-      </div>
+        )}
 
-      <main className={`flex-1 w-full mx-auto p-4 sm:p-6 transition-all ${currentView === 'rhythm_studio' ? 'max-w-4xl' : homeMode === 'batch' && currentView === 'home' ? 'max-w-2xl' : 'max-w-xl'}`}>
-        
-        {/* HOME VIEW */}
-        {currentView === 'home' && (
-          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex flex-col items-center mb-3 text-center">
-              <img
-                src={studioLogo}
-                alt="VoxArt - Studio RidiaLArt-Vision"
-                className="w-[120px] h-[120px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_20px_rgba(0,242,255,0.4)] mb-2.5 transition-transform duration-300 hover:scale-105"
-                onError={(e) => {
-                  const target = e.currentTarget;
-                  if (!target.dataset.triedPng) {
-                    target.dataset.triedPng = 'true';
-                    target.src = 'logo.png';
-                  } else if (!target.dataset.triedJpg) {
-                    target.dataset.triedJpg = 'true';
-                    target.src = 'logo.jpg';
-                  }
-                }}
+        {/* ABOUT VIEW */}
+        {(currentView === 'about' || (interfaceMode === 'hub' && hashRoute.startsWith('about'))) && (
+          <AboutPage
+            activeRoute={
+              interfaceMode === 'hub'
+                ? ((hashRoute.startsWith('about') ? hashRoute : 'about') as AboutSubRouteId)
+                : aboutClassicRoute
+            }
+            onNavigate={(r) => {
+              if (interfaceMode === 'hub') navigateHash(r);
+              else setAboutClassicRoute(r as AboutSubRouteId);
+            }}
+            onBackHome={() => {
+              if (interfaceMode === 'hub') navigateHash('home');
+              else setCurrentView('home');
+            }}
+            onListenWriting={(content, title) => {
+              setText(content);
+              setSaveTitle(title);
+              if (interfaceMode === 'hub') {
+                navigateHash('vocal_single');
+              } else {
+                setCurrentView('home');
+                setHomeMode('single');
+              }
+              showToast('Écrit chargé dans le studio vocal — appuyez sur Générer & Écouter.', 'success');
+            }}
+            onNotify={(msg, type) => showToast(msg, type)}
+          />
+        )}
+
+        {/* DEDICATED MIXER PAGE IN HUB MODE */}
+        {interfaceMode === 'hub' && hashRoute === 'music_mixer' && (
+          <ErrorBoundary moduleName="Fond Sonore & Mixage" onResetToHome={() => navigateHash('home')}>
+            <div className="space-y-4">
+              {currentAudioUrl && (
+                <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 space-y-2">
+                  <div className="text-xs font-semibold text-[#cdd6f4]">Voix prête pour le mixage</div>
+                  <audio
+                    ref={audioRef}
+                    controls
+                    className="w-full accent-[#89b4fa]"
+                    src={currentAudioUrl}
+                    onPlay={() => setIsAudioPlaying(true)}
+                    onPause={() => setIsAudioPlaying(false)}
+                    onEnded={() => setIsAudioPlaying(false)}
+                  />
+                </div>
+              )}
+              <BackgroundMusicStudio
+                activeBackingTrack={activeBackingTrack}
+                setActiveBackingTrack={setActiveBackingTrack}
+                voiceVolume={voiceVolume}
+                setVoiceVolume={setVoiceVolume}
+                backingVolume={backingVolume}
+                setBackingVolume={setBackingVolume}
+                voicePitch={voicePitch}
+                setVoicePitch={setVoicePitch}
+                enableCrossfade={enableCrossfade}
+                setEnableCrossfade={setEnableCrossfade}
+                crossfadeDuration={crossfadeDuration}
+                setCrossfadeDuration={setCrossfadeDuration}
+                currentAudioBlob={currentAudioBlob}
+                onPreviewMix={handlePreviewMix}
+                isPreviewingMix={isPreviewingMix}
+                onMixAndRecordFinal={handleMixAndRecordFinal}
+                isMixingFinal={isMixingFinal}
+                previewMixUrl={previewMixUrl}
+                isPreviewPlaying={isPreviewPlaying}
+                onTogglePreviewPlay={handleTogglePreviewPlay}
+                onStopPreview={handleStopPreview}
+                library={library}
+                onOpenRhythmStudio={() => navigateHash('music_rhythm')}
+                showToast={showToast}
+                onClose={() => navigateHash('home')}
               />
-              <h1 className="text-2xl font-bold text-[#89b4fa] tracking-wide">VoxArt</h1>
-              <div className="text-xs text-[#a6adc8] uppercase tracking-widest font-medium mt-1">Studio RidiaLArt-Vision</div>
             </div>
-            
-            {/* Mode Switcher */}
-            <div className="flex p-1 bg-[#181825] rounded-xl border border-[#313244] gap-1 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setHomeMode('single')}
-                className={`flex-1 min-w-[100px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  homeMode === 'single'
-                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
-                    : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
-                }`}
-              >
-                <Mic className="w-3.5 h-3.5" />
-                <span>🎙️ Studio Vocal</span>
-              </button>
+          </ErrorBoundary>
+        )}
 
-              <button
-                type="button"
-                onClick={() => setHomeMode('video_dubbing')}
-                className={`flex-1 min-w-[130px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  homeMode === 'video_dubbing' || homeMode === 'transcription'
-                    ? 'bg-gradient-to-r from-[#fbbf24] to-[#f59e0b] text-[#1c0f04] shadow-md font-black'
-                    : 'text-[#fbbf24] border border-[#fbbf24]/40 hover:bg-[#fbbf24]/10'
-                }`}
-                title="Importer une vidéo pour y ajouter une Voix Off et un Fond Sonore"
-              >
-                <Film className="w-3.5 h-3.5" />
-                <span>🎬 Doublage Vidéo</span>
-              </button>
+        {/* DEDICATED MINIMAL VOCAL SINGLE PAGE IN HUB MODE */}
+        {interfaceMode === 'hub' && hashRoute === 'vocal_single' && (
+          <ErrorBoundary moduleName="Synthèse Vocale" onResetToHome={() => navigateHash('home')}>
+            <VocalSingleMinimalView
+              text={text}
+              setText={setText}
+              voiceName={voiceName}
+              setVoiceName={handleSelectVoiceName}
+              presetVoices={PRESET_VOICES}
+              customVoices={customVoices}
+              onOpenCustomVoice={() => setCurrentView('custom_voice')}
+              language={language}
+              setLanguage={setLanguage}
+              gender={gender}
+              setGender={setGender}
+              isGenerating={isGenerating}
+              onGenerate={handlePreview}
+              isQuotaError={isQuotaError}
+              retryCountdown={retryCountdown}
+              onCancelQuotaRetry={cancelQuotaRetry}
+              statusMsg={statusMsg}
+              showSaveSection={showSaveSection}
+              setShowSaveSection={setShowSaveSection}
+              saveTitle={saveTitle}
+              setSaveTitle={setSaveTitle}
+              selectedProject={selectedProject}
+              setSelectedProject={setSelectedProject}
+              newProjectName={newProjectName}
+              setNewProjectName={setNewProjectName}
+              libraryKeys={Object.keys(library)}
+              onConfirmSave={handleSaveToLibrary}
+              currentAudioUrl={currentAudioUrl}
+              audioRef={audioRef}
+              isAudioPlaying={isAudioPlaying}
+              setIsAudioPlaying={setIsAudioPlaying}
+              themeMode={themeMode}
+              startTime={startTime}
+              setStartTime={setStartTime}
+              endTime={endTime}
+              setEndTime={setEndTime}
+              audioDuration={audioDuration}
+              formatTimeDisplay={formatTimeDisplay}
+              onPlayTrimmed={playTrimmedSelection}
+              onDownloadAudio={handleDownloadAudioFile}
+              onDownloadZipPack={handleDownloadStudioPackZip}
+              onShareSocial={handleShareSocial}
+              activeBackingTrackTitle={activeBackingTrack?.title || null}
+              onOpenMixerPage={() => navigateHash('music_mixer')}
+              onOpenSettingsPage={() => navigateHash('settings')}
+              onImportTextClick={() => fileInputRef.current?.click()}
+              fileInputRef={fileInputRef}
+              onImportFile={handleImportFile}
+              showToast={showToast}
+            />
+          </ErrorBoundary>
+        )}
 
-              <button
-                type="button"
-                onClick={() => setHomeMode('workspace')}
-                className={`flex-1 min-w-[95px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  homeMode === 'workspace'
-                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
-                    : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
-                }`}
-              >
-                <Bot className="w-3.5 h-3.5" />
-                <span>💬 Agent IA</span>
-              </button>
+        {/* HOME VIEW (CLASSIC OU SOUS-PAGES PARTAGEES HUB) */}
+        {currentView === 'home' && !(interfaceMode === 'hub' && (hashRoute === 'home' || hashRoute === 'vocal_single' || hashRoute === 'music_mixer' || hashRoute.startsWith('about'))) && (
+          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 sm:p-6 shadow-xl space-y-4">
+            {interfaceMode === 'classic' && (
+              <>
+                <div className="flex flex-col items-center mb-3 text-center">
+                  <img
+                    src={studioLogo}
+                    alt="VoxArt - Studio RidiaLArt-Vision"
+                    className="w-[120px] h-[120px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_20px_rgba(0,242,255,0.4)] mb-2.5 transition-transform duration-300 hover:scale-105"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (!target.dataset.triedPng) {
+                        target.dataset.triedPng = 'true';
+                        target.src = 'logo.png';
+                      } else if (!target.dataset.triedJpg) {
+                        target.dataset.triedJpg = 'true';
+                        target.src = 'logo.jpg';
+                      }
+                    }}
+                  />
+                  <h1 className="text-2xl font-bold text-[#89b4fa] tracking-wide">VoxArt</h1>
+                  <div className="text-xs text-[#a6adc8] uppercase tracking-widest font-medium mt-1">Studio RidiaLArt-Vision</div>
+                </div>
+                
+                {/* Mode Switcher */}
+                <div className="flex p-1 bg-[#181825] rounded-xl border border-[#313244] gap-1 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setHomeMode('single')}
+                    className={`flex-1 min-w-[100px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      homeMode === 'single'
+                        ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                        : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
+                    }`}
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    <span>🎙️ Studio Vocal</span>
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => setHomeMode('batch')}
-                className={`flex-1 min-w-[75px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  homeMode === 'batch'
-                    ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
-                    : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>📦 Lots</span>
-                {batchQueue.length > 0 && (
-                  <span className="text-[10px] bg-[#11111b]/20 px-1.5 py-0.2 rounded-full font-bold">
-                    {batchCompletedCount}/{batchQueue.length}
-                  </span>
-                )}
-              </button>
-            </div>
+                  <button
+                    type="button"
+                    onClick={() => setHomeMode('video_dubbing')}
+                    className={`flex-1 min-w-[130px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      homeMode === 'video_dubbing' || homeMode === 'transcription'
+                        ? 'bg-gradient-to-r from-[#fbbf24] to-[#f59e0b] text-[#1c0f04] shadow-md font-black'
+                        : 'text-[#fbbf24] border border-[#fbbf24]/40 hover:bg-[#fbbf24]/10'
+                    }`}
+                    title="Importer une vidéo pour y ajouter une Voix Off et un Fond Sonore"
+                  >
+                    <Film className="w-3.5 h-3.5" />
+                    <span>🎬 Doublage Vidéo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setHomeMode('workspace')}
+                    className={`flex-1 min-w-[95px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      homeMode === 'workspace'
+                        ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                        : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
+                    }`}
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    <span>💬 Agent IA</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setHomeMode('batch')}
+                    className={`flex-1 min-w-[75px] py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      homeMode === 'batch'
+                        ? themeMode === 'ridialart' ? 'bg-[#d97706] text-[#1c0f04] shadow-md font-bold' : 'bg-[#89b4fa] text-[#11111b] shadow-md'
+                        : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>📦 Lots</span>
+                    {batchQueue.length > 0 && (
+                      <span className="text-[10px] bg-[#11111b]/20 px-1.5 py-0.2 rounded-full font-bold">
+                        {batchCompletedCount}/{batchQueue.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
 
             {homeMode === 'workspace' && (
-              <UnifiedStudioWorkspace
-                currentText={text}
-                setCurrentText={setText}
-                apiKey={apiKey}
-                onOpenSettings={() => setCurrentView('settings')}
-                addToast={showToast}
-                library={library}
-                onSaveToLibrary={handleSaveAnyToLibrary}
-                onPreviewTTS={handlePreview}
-                onPreviewMix={handlePreviewMix}
-                isGenerating={isGenerating}
-                currentAudioUrl={currentAudioUrl}
-                onSpeakText={(txt: string) => generateTTS(txt)}
-                onTransferToVocalStudio={handleTransferFromAgent}
-                onSwitchToStudio={() => setHomeMode('single')}
-              />
+              <ErrorBoundary moduleName="Agent IA" onResetToHome={() => { setCurrentView('home'); setHomeModeState('single'); }}>
+                <UnifiedStudioWorkspace
+                  currentText={text}
+                  setCurrentText={setText}
+                  apiKey={apiKey}
+                  onOpenSettings={() => setCurrentView('settings')}
+                  addToast={showToast}
+                  library={library}
+                  onSaveToLibrary={handleSaveAnyToLibrary}
+                  onPreviewTTS={handlePreview}
+                  onPreviewMix={handlePreviewMix}
+                  isGenerating={isGenerating}
+                  currentAudioUrl={currentAudioUrl}
+                  onSpeakText={(txt: string) => generateTTS(txt)}
+                  onTransferToVocalStudio={handleTransferFromAgent}
+                  onSwitchToStudio={() => interfaceMode === 'hub' ? navigateHash('vocal_single') : setHomeMode('single')}
+                />
+              </ErrorBoundary>
             )}
 
             {(homeMode === 'transcription' || homeMode === 'video_dubbing') && (
-              <TranscriptionStudio
-                apiKey={apiKey}
-                addToast={showToast}
-                activeBackingTrack={activeBackingTrack}
-                initialVideoFile={preloadedVideoFile}
-                initialText={text}
-                library={library}
-                onSwitchMode={(mode) => setHomeMode(mode as any)}
-                onInsertTextToStudio={(transcribedText) => {
-                  setText(transcribedText);
-                  setHomeMode('single');
-                  showToast('Texte injecté dans le Studio Vocal !', 'success');
-                }}
-                onInsertTextToAgent={(transcribedText) => {
-                  setText(transcribedText);
-                  setHomeMode('workspace');
-                  showToast('Texte transféré dans l\'Agent IA pour analyse & scénarios !', 'success');
-                }}
-              />
+              <ErrorBoundary moduleName="Studio Vidéo & Transcription" onResetToHome={() => { setCurrentView('home'); setHomeModeState('single'); }}>
+                <TranscriptionStudio
+                  apiKey={apiKey}
+                  addToast={showToast}
+                  activeBackingTrack={activeBackingTrack}
+                  initialVideoFile={preloadedVideoFile}
+                  initialText={text}
+                  library={library}
+                  onSwitchMode={(mode) => setHomeMode(mode as any)}
+                  onInsertTextToStudio={(transcribedText) => {
+                    setText(transcribedText);
+                    if (interfaceMode === 'hub') {
+                      navigateHash('vocal_single');
+                    } else {
+                      setHomeMode('single');
+                    }
+                    showToast('Texte injecté dans le Studio Vocal !', 'success');
+                  }}
+                  onInsertTextToAgent={(transcribedText) => {
+                    setText(transcribedText);
+                    setHomeMode('workspace');
+                    showToast('Texte transféré dans l\'Agent IA pour analyse & scénarios !', 'success');
+                  }}
+                />
+              </ErrorBoundary>
             )}
 
             {homeMode === 'single' ? (
@@ -2650,19 +3299,40 @@ ${item.text}`;
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {/* Voix Gemini Prebuilt */}
+                    {/* Voix Gemini Prebuilt & Voix Personnalisées */}
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#a6adc8] mb-1">
-                        Voix Gemini :
-                      </label>
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <label className="block text-[11px] font-semibold text-[#a6adc8]">
+                          Voix Gemini :
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setCurrentView('custom_voice')}
+                          className="text-[11px] font-bold text-[#fbbf24] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          <span>Ma Voix</span>
+                        </button>
+                      </div>
                       <select
                         value={voiceName}
-                        onChange={(e) => setVoiceName(e.target.value)}
+                        onChange={(e) => handleSelectVoiceName(e.target.value)}
                         className="w-full p-2.5 rounded-xl bg-[#11111b] border border-[#45475a] text-[#cdd6f4] text-xs font-medium focus:outline-none focus:border-[#89b4fa] cursor-pointer"
                       >
-                        {PRESET_VOICES.map(v => (
-                          <option key={v.id} value={v.id}>{v.name}</option>
-                        ))}
+                        {customVoices.length > 0 && (
+                          <optgroup label="Mes Voix Personnalisées">
+                            {customVoices.map(cv => (
+                              <option key={cv.id} value={toCustomVoiceOptionId(cv.id)}>
+                                ★ {cv.name} ({cv.baseVoiceName})
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label="Voix Studio Gemini">
+                          {PRESET_VOICES.map(v => (
+                            <option key={v.id} value={v.id}>{v.name}</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
 
@@ -3357,33 +4027,35 @@ ${item.text}`;
 
                 {/* STUDIO DE FOND SONORE & MIXAGE (COMPOSITION, PRESETS, BIBLIO, PITCH, MIX) */}
                 {showMixer && (
-                  <BackgroundMusicStudio
-                    activeBackingTrack={activeBackingTrack}
-                    setActiveBackingTrack={setActiveBackingTrack}
-                    voiceVolume={voiceVolume}
-                    setVoiceVolume={setVoiceVolume}
-                    backingVolume={backingVolume}
-                    setBackingVolume={setBackingVolume}
-                    voicePitch={voicePitch}
-                    setVoicePitch={setVoicePitch}
-                    enableCrossfade={enableCrossfade}
-                    setEnableCrossfade={setEnableCrossfade}
-                    crossfadeDuration={crossfadeDuration}
-                    setCrossfadeDuration={setCrossfadeDuration}
-                    currentAudioBlob={currentAudioBlob}
-                    onPreviewMix={handlePreviewMix}
-                    isPreviewingMix={isPreviewingMix}
-                    onMixAndRecordFinal={handleMixAndRecordFinal}
-                    isMixingFinal={isMixingFinal}
-                    previewMixUrl={previewMixUrl}
-                    isPreviewPlaying={isPreviewPlaying}
-                    onTogglePreviewPlay={handleTogglePreviewPlay}
-                    onStopPreview={handleStopPreview}
-                    library={library}
-                    onOpenRhythmStudio={() => setCurrentView('rhythm_studio')}
-                    showToast={showToast}
-                    onClose={() => setShowMixer(false)}
-                  />
+                  <ErrorBoundary moduleName="Studio Fond Sonore & Mixage" onResetToHome={() => setShowMixer(false)}>
+                    <BackgroundMusicStudio
+                      activeBackingTrack={activeBackingTrack}
+                      setActiveBackingTrack={setActiveBackingTrack}
+                      voiceVolume={voiceVolume}
+                      setVoiceVolume={setVoiceVolume}
+                      backingVolume={backingVolume}
+                      setBackingVolume={setBackingVolume}
+                      voicePitch={voicePitch}
+                      setVoicePitch={setVoicePitch}
+                      enableCrossfade={enableCrossfade}
+                      setEnableCrossfade={setEnableCrossfade}
+                      crossfadeDuration={crossfadeDuration}
+                      setCrossfadeDuration={setCrossfadeDuration}
+                      currentAudioBlob={currentAudioBlob}
+                      onPreviewMix={handlePreviewMix}
+                      isPreviewingMix={isPreviewingMix}
+                      onMixAndRecordFinal={handleMixAndRecordFinal}
+                      isMixingFinal={isMixingFinal}
+                      previewMixUrl={previewMixUrl}
+                      isPreviewPlaying={isPreviewPlaying}
+                      onTogglePreviewPlay={handleTogglePreviewPlay}
+                      onStopPreview={handleStopPreview}
+                      library={library}
+                      onOpenRhythmStudio={() => setCurrentView('rhythm_studio')}
+                      showToast={showToast}
+                      onClose={() => setShowMixer(false)}
+                    />
+                  </ErrorBoundary>
                 )}
 
                 {/* Barre récapitulative compacte du fond sonore actif lorsque le panneau est fermé */}
@@ -3397,14 +4069,6 @@ ${item.text}`;
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <audio
-                        ref={backingAudioRef}
-                        src={activeBackingTrack.url}
-                        loop
-                        onPlay={() => setIsBackingTrackPlaying(true)}
-                        onPause={() => setIsBackingTrackPlaying(false)}
-                        className="hidden"
-                      />
                       <button
                         type="button"
                         onClick={() => {
@@ -3442,7 +4106,7 @@ ${item.text}`;
                   </div>
                 )}
               </div>
-            ) : (
+            ) : homeMode === 'batch' ? (
               /* BATCH PROCESSING MODE */
               <div className="space-y-4 animate-fadeIn">
                 {/* Project & Configuration Card */}
@@ -3862,51 +4526,195 @@ ${item.text}`;
                   </div>
                 )}
               </div>
-            )}
+            ) : null}
           </div>
         )}
 
         {/* AFRICAN RHYTHM STUDIO VIEW (COMPOSITION, EFFETS, EXPORT WAV & BIBLIO) */}
         {currentView === 'rhythm_studio' && (
-          <AfricanRhythmStudio
-            onBackToStudio={() => setCurrentView('home')}
-            onSaveToLibrary={handleSaveRhythmToLibrary}
-            onUseAsBackingTrack={handleUseRhythmAsBackingTrack}
-            existingProjects={Object.keys(library)}
-            initialComposition={studioComposition}
-          />
+          <ErrorBoundary moduleName="Atelier Rythmes" onResetToHome={() => setCurrentView('home')}>
+            <AfricanRhythmStudio
+              onBackToStudio={() => setCurrentView('home')}
+              onSaveToLibrary={handleSaveRhythmToLibrary}
+              onUseAsBackingTrack={handleUseRhythmAsBackingTrack}
+              existingProjects={Object.keys(library)}
+              initialComposition={studioComposition}
+            />
+          </ErrorBoundary>
         )}
 
         {/* LIBRARY VIEW */}
-        {currentView === 'library' && (
-          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex flex-col items-center mb-1 text-center">
-              <img
-                src={studioLogo}
-                alt="VoxArt"
-                className="w-[70px] h-[70px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.4)] mb-1.5 transition-transform duration-300 hover:scale-105"
-                onError={(e) => {
-                  const target = e.currentTarget;
-                  if (!target.dataset.triedPng) {
-                    target.dataset.triedPng = 'true';
-                    target.src = 'logo.png';
-                  } else if (!target.dataset.triedJpg) {
-                    target.dataset.triedJpg = 'true';
-                    target.src = 'logo.jpg';
-                  }
-                }}
-              />
-              <h1 className="text-xl font-bold text-[#89b4fa]">Bibliothèque VoxArt</h1>
-              <div className="text-[10px] text-[#a6adc8] uppercase tracking-widest font-medium">Studio RidiaLArt-Vision</div>
-            </div>
+        {currentView === 'library' && interfaceMode === 'hub' && (
+          <LibraryHubView
+            library={library}
+            newProjectName={libNewProjectName}
+            onNewProjectNameChange={setLibNewProjectName}
+            onCreateProject={handleCreateLibraryProject}
+            onRenameProject={renameProject}
+            onDeleteProject={(proj) => {
+              openConfirmDialog(
+                "Supprimer le projet",
+                `Êtes-vous sûr de vouloir supprimer définitivement le projet "${proj}" et tout son contenu ?`,
+                () => {
+                  const updated = { ...library };
+                  delete updated[proj];
+                  saveLibraryToStorage(updated);
+                  showToast(`Projet "${proj}" supprimé.`, "info");
+                }
+              );
+            }}
+            onExportProjectJson={exportProjectAsJson}
+            onExportProjectZip={exportProjectAsZip}
+            onExportAllDatabaseJson={() => {
+              const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(library, null, 2));
+              const downloadAnchor = document.createElement('a');
+              downloadAnchor.setAttribute("href", dataStr);
+              downloadAnchor.setAttribute("download", `voxart_database_backup_${new Date().toISOString().slice(0, 10)}.json`);
+              document.body.appendChild(downloadAnchor);
+              downloadAnchor.click();
+              downloadAnchor.remove();
+              showToast("Base de données téléchargée avec succès sur votre appareil !", "success");
+            }}
+            onImportProjectJson={handleImportProjectJson}
+            onPlayAudio={async (dataUrl) => {
+              const res = await fetch(dataUrl);
+              const blob = await res.blob();
+              const url = URL.createObjectURL(blob);
+              setCurrentAudioBlob(blob);
+              setCurrentAudioUrl(url);
+              navigateHash('vocal_single');
+              setTimeout(() => {
+                if (audioRef.current) {
+                  audioRef.current.src = url;
+                  audioRef.current.play().catch(() => {});
+                }
+              }, 80);
+            }}
+            onRenameAudio={renameAudioItem}
+            onShareAudio={shareAudioItem}
+            onExportAudioWav={async (dataUrl, filename) => {
+              try {
+                await exportAudioDataAsWav(dataUrl, filename);
+                showToast(`Audio "${filename}" exporté en WAV !`, "success");
+              } catch {
+                showToast("Erreur lors de l'export WAV de ce fichier.", "error");
+              }
+            }}
+            onDeleteAudio={(proj, idx) => {
+              const updated = { ...library };
+              if (updated[proj]) {
+                updated[proj] = {
+                  ...updated[proj],
+                  audios: updated[proj].audios.filter((_, i) => i !== idx),
+                };
+                saveLibraryToStorage(updated);
+              }
+            }}
+            onEditRhythm={(itemName) => {
+              try {
+                const savedComps = JSON.parse(localStorage.getItem('voxart_saved_compositions') || '{}');
+                if (savedComps[itemName]) {
+                  setStudioComposition(savedComps[itemName]);
+                }
+              } catch {
+                // ignore
+              }
+              setCurrentView('rhythm_studio');
+            }}
+            onUseAudioAsBackingTrack={(dataUrl, itemName) => {
+              setActiveBackingTrack({ url: dataUrl, title: itemName });
+              setIsBackingTrackPlaying(false);
+              showToast(`Boucle "${itemName}" chargée comme accompagnement du studio vocal !`, "success");
+              navigateHash('vocal_single');
+            }}
+            onCopyScript={handleCopyScript}
+            onCopyAllScripts={async (proj, texts) => {
+              const allText = texts
+                .map((t) => {
+                  const clean = t.content.includes('----------------------------------------\n\n')
+                    ? t.content.split('----------------------------------------\n\n')[1]
+                    : t.content;
+                  return (clean || t.content).trim();
+                })
+                .filter(Boolean)
+                .join('\n\n---\n\n');
+              await copyToClipboard(allText);
+              setCopiedScriptId(`section-${proj}`);
+              setTimeout(() => setCopiedScriptId(null), 2000);
+            }}
+            copiedScriptId={copiedScriptId}
+            onUseScriptInStudio={handleUseScriptInStudio}
+            onRenameText={renameTextItem}
+            onShareText={shareTextItem}
+            onDeleteText={(proj, idx) => {
+              const updated = { ...library };
+              if (updated[proj]) {
+                updated[proj] = {
+                  ...updated[proj],
+                  texts: updated[proj].texts.filter((_, i) => i !== idx),
+                };
+                saveLibraryToStorage(updated);
+              }
+            }}
+            onDownloadTextSrt={(content, filename) => {
+              const srt = generateSRT(content);
+              const blob = new Blob([srt], { type: 'text/srt;charset=utf-8' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `${filename}.srt`;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 5000);
+            }}
+            onUploadVideo={handleVideoUpload}
+            onWatchVideo={(url, title) => setActiveVideoModal({ url, title })}
+            onDeleteVideo={(proj, idx) => {
+              const updated = { ...library };
+              if (updated[proj]?.videos) {
+                updated[proj] = {
+                  ...updated[proj],
+                  videos: updated[proj].videos!.filter((_, i) => i !== idx),
+                };
+                saveLibraryToStorage(updated);
+                showToast("Vidéo supprimée.", "info");
+              }
+            }}
+          />
+        )}
+
+        {currentView === 'library' && interfaceMode === 'classic' && (
+          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 sm:p-6 shadow-xl space-y-4">
+            {interfaceMode === 'classic' && (
+              <div className="flex flex-col items-center mb-1 text-center">
+                <img
+                  src={studioLogo}
+                  alt="VoxArt"
+                  className="w-[70px] h-[70px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.4)] mb-1.5 transition-transform duration-300 hover:scale-105"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (!target.dataset.triedPng) {
+                      target.dataset.triedPng = 'true';
+                      target.src = 'logo.png';
+                    } else if (!target.dataset.triedJpg) {
+                      target.dataset.triedJpg = 'true';
+                      target.src = 'logo.jpg';
+                    }
+                  }}
+                />
+                <h1 className="text-xl font-bold text-[#89b4fa]">Bibliothèque VoxArt</h1>
+                <div className="text-[10px] text-[#a6adc8] uppercase tracking-widest font-medium">Studio RidiaLArt-Vision</div>
+              </div>
+            )}
             
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2">
-              <button
-                onClick={() => setCurrentView('home')}
-                className="w-full sm:w-auto py-2 px-4 rounded-xl bg-[#313244] text-[#89b4fa] font-semibold text-xs border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
-              >
-                ⬅️ Retour à l'accueil
-              </button>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
+              {interfaceMode === 'classic' && (
+                <button
+                  onClick={() => setCurrentView('home')}
+                  className="w-full sm:w-auto py-2 px-4 rounded-xl bg-[#313244] text-[#89b4fa] font-semibold text-xs border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
+                >
+                  ⬅️ Retour à l'accueil
+                </button>
+              )}
 
               <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
                 <button
@@ -4080,9 +4888,11 @@ ${item.text}`;
                                     const res = await fetch(item.data);
                                     const blob = await res.blob();
                                     const url = URL.createObjectURL(blob);
+                                    setCurrentAudioBlob(blob);
+                                    setCurrentAudioUrl(url);
                                     if (audioRef.current) {
                                       audioRef.current.src = url;
-                                      audioRef.current.play();
+                                      audioRef.current.play().catch(() => {});
                                     }
                                     setCurrentView('home');
                                   }}
@@ -4097,13 +4907,22 @@ ${item.text}`;
                                 >
                                   📤
                                 </button>
-                                <a
-                                  href={item.data}
-                                  download={`${item.name}.wav`}
-                                  className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] rounded text-[11px]"
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await exportAudioDataAsWav(item.data, item.name);
+                                      showToast(`Audio "${item.name}" exporté en WAV !`, "success");
+                                    } catch {
+                                      showToast("Erreur lors de l'export WAV de ce fichier.", "error");
+                                    }
+                                  }}
+                                  className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] rounded text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                                  title="Exporter au format WAV"
                                 >
-                                  ⬇️
-                                </a>
+                                  <Download className="w-3 h-3" />
+                                  <span>Exporter WAV</span>
+                                </button>
                                 <button
                                   onClick={() => {
                                     const updated = { ...library };
@@ -4346,33 +5165,81 @@ ${item.text}`;
 
         {/* SETTINGS VIEW */}
         {currentView === 'settings' && (
-          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex flex-col items-center mb-1 text-center">
-              <img
-                src={studioLogo}
-                alt="VoxArt"
-                className="w-[70px] h-[70px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.4)] mb-1.5 transition-transform duration-300 hover:scale-105"
-                onError={(e) => {
-                  const target = e.currentTarget;
-                  if (!target.dataset.triedPng) {
-                    target.dataset.triedPng = 'true';
-                    target.src = 'logo.png';
-                  } else if (!target.dataset.triedJpg) {
-                    target.dataset.triedJpg = 'true';
-                    target.src = 'logo.jpg';
-                  }
-                }}
-              />
-              <h1 className="text-xl font-bold text-[#89b4fa]">Réglages de la Voix</h1>
-              <div className="text-[10px] text-[#a6adc8] uppercase tracking-widest font-medium">Studio RidiaLArt-Vision</div>
+          <div className="bg-[#1e1e2e] border border-[#313244] rounded-2xl p-4 sm:p-6 shadow-xl space-y-4">
+            {interfaceMode === 'classic' && (
+              <>
+                <div className="flex flex-col items-center mb-1 text-center">
+                  <img
+                    src={studioLogo}
+                    alt="VoxArt"
+                    className="w-[70px] h-[70px] rounded-full object-cover border-2 border-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.4)] mb-1.5 transition-transform duration-300 hover:scale-105"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (!target.dataset.triedPng) {
+                        target.dataset.triedPng = 'true';
+                        target.src = 'logo.png';
+                      } else if (!target.dataset.triedJpg) {
+                        target.dataset.triedJpg = 'true';
+                        target.src = 'logo.jpg';
+                      }
+                    }}
+                  />
+                  <h1 className="text-xl font-bold text-[#89b4fa]">Réglages de la Voix</h1>
+                  <div className="text-[10px] text-[#a6adc8] uppercase tracking-widest font-medium">Studio RidiaLArt-Vision</div>
+                </div>
+                
+                <button
+                  onClick={() => setCurrentView('home')}
+                  className="py-2 px-4 rounded-xl bg-[#313244] text-[#89b4fa] font-semibold text-xs border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
+                >
+                  ⬅️ Retour à l'accueil
+                </button>
+              </>
+            )}
+
+            {/* Sélecteur d'interface (permet de revenir en arrière à tout moment) */}
+            <div className="p-4 bg-[#181825] rounded-xl border border-[#313244] space-y-2.5">
+              <div>
+                <h3 className="text-xs font-bold text-[#cdd6f4]">Interface de navigation</h3>
+                <p className="text-[11px] text-[#a6adc8] mt-0.5">
+                  Basculez entre le nouveau Hub par catégories et l'ancien affichage classique à tout moment.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 p-1 bg-[#11111b] rounded-xl border border-[#313244]">
+                <button
+                  type="button"
+                  onClick={() => handleSetInterfaceMode('hub')}
+                  className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    interfaceMode === 'hub'
+                      ? 'bg-[#89b4fa] text-[#11111b]'
+                      : 'text-[#a6adc8] hover:text-[#cdd6f4]'
+                  }`}
+                >
+                  Nouveau Hub Épuré
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetInterfaceMode('classic')}
+                  className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    interfaceMode === 'classic'
+                      ? 'bg-[#89b4fa] text-[#11111b]'
+                      : 'text-[#a6adc8] hover:text-[#cdd6f4]'
+                  }`}
+                >
+                  Mode Classique
+                </button>
+              </div>
             </div>
-            
-            <button
-              onClick={() => setCurrentView('home')}
-              className="py-2 px-4 rounded-xl bg-[#313244] text-[#89b4fa] font-semibold text-xs border border-[#89b4fa]/50 hover:bg-[#89b4fa] hover:text-[#11111b] transition-all"
-            >
-              ⬅️ Retour à l'accueil
-            </button>
+
+            {/* Apparence, Thème Noir & Or et Fond d'écran */}
+            <AppearanceSettingsPanel
+              config={appearanceConfig}
+              customWallpapers={customWallpapers}
+              onChangeConfig={handleUpdateAppearanceConfig}
+              onAddCustomWallpaper={handleAddCustomWallpaper}
+              onRemoveCustomWallpaper={handleRemoveCustomWallpaper}
+              onNotify={(msg, type) => showToast(msg, type)}
+            />
 
             {/* Mises à jour PWA & Statut Version */}
             <UpdateSettingsSection
@@ -4502,15 +5369,36 @@ ${item.text}`;
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-[#a6adc8] mb-1">Voix Gemini Prebuilt :</label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-semibold text-[#a6adc8]">Voix Gemini / Personnalisée :</label>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentView('custom_voice')}
+                    className="text-xs font-bold text-[#fbbf24] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Personnaliser ma voix</span>
+                  </button>
+                </div>
                 <select
                   value={voiceName}
-                  onChange={(e) => setVoiceName(e.target.value)}
+                  onChange={(e) => handleSelectVoiceName(e.target.value)}
                   className="w-full p-2.5 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm"
                 >
-                  {PRESET_VOICES.map(v => (
-                    <option key={v.id} value={v.id}>{v.name}</option>
-                  ))}
+                  {customVoices.length > 0 && (
+                    <optgroup label="Mes Voix Personnalisées">
+                      {customVoices.map(cv => (
+                        <option key={cv.id} value={toCustomVoiceOptionId(cv.id)}>
+                          ★ {cv.name} ({cv.baseVoiceName})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="Voix Studio Gemini">
+                    {PRESET_VOICES.map(v => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -4544,7 +5432,7 @@ ${item.text}`;
               </div>
               
               <p className="text-[11px] text-[#a6adc8] leading-relaxed">
-                Enregistrez vos paramètres actuels (Langue : <strong className="text-white">{language}</strong>, Voix : <strong className="text-white">{voiceName}</strong>, Modèle : <strong className="text-white">{model}</strong>, Timbre : <strong className="text-white">{genderText}</strong>, Pitch : <strong className="text-white">{voicePitch.toFixed(2)}x</strong>). Ils seront automatiquement restaurés par défaut à chaque lancement de l'application.
+                Enregistrez vos paramètres actuels (Langue : <strong className="text-white">{language}</strong>, Voix : <strong className="text-white">{isCustomVoiceId(voiceName) ? (customVoices.find(cv => cv.id === extractCustomVoiceId(voiceName))?.name || voiceName) : voiceName}</strong>, Modèle : <strong className="text-white">{model}</strong>, Timbre : <strong className="text-white">{genderText}</strong>, Pitch : <strong className="text-white">{voicePitch.toFixed(2)}x</strong>). Ils seront automatiquement restaurés par défaut à chaque lancement de l'application.
               </p>
 
               {defaultPresetInfo && (
@@ -4591,6 +5479,16 @@ ${item.text}`;
               )}
             </div>
 
+            <UpdateSettingsSection
+              isChecking={appUpdate.isChecking}
+              hasUpdate={appUpdate.hasUpdate}
+              lastChecked={appUpdate.lastChecked}
+              serverVersion={appUpdate.serverVersion}
+              message={appUpdate.message}
+              onCheck={() => appUpdate.checkForUpdate(true)}
+              onApply={appUpdate.applyUpdate}
+            />
+
             <button
               onClick={() => setCurrentView('home')}
               className="w-full py-3 rounded-xl bg-[#89b4fa] text-[#11111b] font-bold text-sm shadow-md hover:bg-[#b4befe] transition-all"
@@ -4602,9 +5500,37 @@ ${item.text}`;
 
         {/* KNOWLEDGE BASE VIEW */}
         {currentView === 'knowledge_base' && (
-          <KnowledgeBaseManager apiKey={apiKey} addToast={showToast} />
+          <ErrorBoundary moduleName="Base de Connaissance" onResetToHome={() => setCurrentView('home')}>
+            <KnowledgeBaseManager apiKey={apiKey} addToast={showToast} />
+          </ErrorBoundary>
         )}
 
+        {/* CUSTOM VOICE STUDIO VIEW */}
+        {currentView === 'custom_voice' && (
+          <ErrorBoundary moduleName="Ma Voix Personnalisée" onResetToHome={() => setCurrentView('home')}>
+            <CustomVoiceStudio
+              customVoices={customVoices}
+              activeVoiceName={voiceName}
+              language={language}
+              apiKey={apiKey}
+              themeMode={themeMode}
+              onSaveProfile={handleSaveCustomVoiceProfile}
+              onDeleteProfile={handleDeleteCustomVoiceProfile}
+              onActivateVoice={handleSelectVoiceName}
+              onGoToVocalStudio={() => {
+                if (interfaceMode === 'hub') {
+                  navigateHash('vocal_single');
+                } else {
+                  setCurrentView('home');
+                  setHomeMode('single');
+                }
+              }}
+              showToast={showToast}
+            />
+          </ErrorBoundary>
+        )}
+
+        </Suspense>
       </main>
 
       {/* Toast Notifications */}
@@ -4615,12 +5541,15 @@ ${item.text}`;
             className={`pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md border text-xs sm:text-sm font-medium transition-all transform animate-in fade-in slide-in-from-bottom-2 ${
               toast.type === 'error'
                 ? 'bg-red-950/90 border-red-500/50 text-red-200'
+                : toast.type === 'warning'
+                ? 'bg-amber-950/90 border-[#fbbf24]/60 text-amber-200'
                 : toast.type === 'success'
                 ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
                 : 'bg-[#1e1e2e]/95 border-[#89b4fa]/40 text-[#cdd6f4]'
             }`}
           >
             {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
+            {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-[#fbbf24] shrink-0" />}
             {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
             {toast.type === 'info' && <Info className="w-4 h-4 text-[#89b4fa] shrink-0" />}
             <span className="flex-1">{toast.message}</span>
@@ -4729,14 +5658,16 @@ ${item.text}`;
         </div>
       )}
 
-      {/* AI Agent Chat Widget */}
-      <AIAgentChat 
-        currentText={text} 
-        apiKey={apiKey} 
-        onOpenSettings={() => setCurrentView('settings')} 
-        addToast={showToast} 
-        onTransferToVocalStudio={handleTransferFromAgent}
-      />
+      {/* AI Agent Chat Widget (mode classique uniquement pour éviter l'encombrement mobile) */}
+      {interfaceMode === 'classic' && (
+        <AIAgentChat 
+          currentText={text} 
+          apiKey={apiKey} 
+          onOpenSettings={() => setCurrentView('settings')} 
+          addToast={showToast} 
+          onTransferToVocalStudio={handleTransferFromAgent}
+        />
+      )}
     </div>
   );
 }

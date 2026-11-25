@@ -21,7 +21,7 @@ export const RIDIALART_DOCTRINE_DATA: Record<string, DoctrineSection> = {
     items: [
       {
         subtitle: "Polyrythmie Plastique",
-        description: "Transposition visuelle des musiques sénégalaises (Sabar, Kora, Tama, Riti). Juxtaposition de motifs (Rabal, Bogolan) et de circuits imprimés."
+        description: "Transposition plastique des musiques sénégalaises (Sabar, Kora, Tama, Riti). Juxtaposition de motifs (Rabal, Bogolan) et de circuits imprimés."
       },
       {
         subtitle: "Synesthésie Haptique",

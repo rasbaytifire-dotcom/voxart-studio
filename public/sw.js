@@ -2,7 +2,7 @@
  * VoxArt Studio - Service Worker for PWA Offline & Automatic Live Updates
  */
 
-const CACHE_NAME = 'voxart-cache-v2-live';
+const CACHE_NAME = 'voxart-cache-v3-ridialart';
 
 const STATIC_ASSETS = [
   '/',
@@ -86,7 +86,10 @@ self.addEventListener('fetch', (event) => {
           );
         }
 
-        return new Response('', { status: 200 });
+        return new Response('Offline - asset not in cache', { 
+          status: 503, 
+          statusText: 'Service Unavailable (Offline)' 
+        });
       })
   );
 });

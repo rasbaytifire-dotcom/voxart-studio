@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, CheckCircle2, ArrowDownCircle, AlertCircle, Sparkles, Smartphone, Trash2 } from 'lucide-react';
 
-export const APP_VERSION = "2.4.2";
+export const APP_VERSION = "3.0.0";
 
 interface UpdateStatus {
   isChecking: boolean;
@@ -262,23 +262,6 @@ export const UpdateSettingsSection: React.FC<{
           <Trash2 className="w-3.5 h-3.5 text-[#f38ba8]" />
           <span>Vider le cache & Recharger</span>
         </button>
-      </div>
-
-      <div className="pt-2 border-t border-[#313244] space-y-1 text-[11px]">
-        <div className="flex items-center justify-between text-[#a6adc8]">
-          <span>📱 <strong>Format APK Android autonome :</strong></span>
-          <a
-            href="https://github.com/rasbaytifire-dotcom/voxart-studio/releases/latest"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-amber-400 hover:text-amber-300 font-semibold underline flex items-center gap-1"
-          >
-            Télécharger VoxArt-Studio.apk
-          </a>
-        </div>
-        <p className="text-[10px] text-[#6c7086] leading-relaxed">
-          Le workflow GitHub Actions compile automatiquement votre application en fichier <code>.apk</code> natif à chaque publication, éliminant les restrictions d'installation de Google Chrome.
-        </p>
       </div>
     </div>
   );

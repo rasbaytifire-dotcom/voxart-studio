@@ -972,6 +972,43 @@ export function playAfricanInstrument(
  * Procedural synthesis of continuous endogenous soundscapes.
  * Can be run in both real-time AudioContext and offline rendering.
  */
+export interface SafePanNode extends AudioNode {
+  pan: {
+    value: number;
+    setValueAtTime: (v: number, t?: number) => void;
+  };
+}
+
+/**
+ * Universal safe panner factory: uses createStereoPanner when available,
+ * or falls back to a transparent GainNode with an identical .pan interface for Android WebViews.
+ */
+export function createSafePanner(ctx: BaseAudioContext, initialPan: number = 0): SafePanNode {
+  if (typeof (ctx as any).createStereoPanner === 'function') {
+    try {
+      const panner = (ctx as any).createStereoPanner();
+      const clamped = Math.max(-1, Math.min(1, initialPan));
+      if (panner.pan) {
+        panner.pan.value = clamped;
+      }
+      return panner;
+    } catch (e) {
+      console.warn("createStereoPanner failed, using fallback gain node:", e);
+    }
+  }
+
+  // Safe fallback for Android WebView / environments without StereoPannerNode
+  const gain = ctx.createGain();
+  const panProp = {
+    _val: initialPan,
+    get value() { return this._val; },
+    set value(v: number) { this._val = Math.max(-1, Math.min(1, v)); },
+    setValueAtTime(v: number, _t?: number) { this._val = Math.max(-1, Math.min(1, v)); }
+  };
+  (gain as any).pan = panProp;
+  return gain as unknown as SafePanNode;
+}
+
 export function playContinuousSoundscape(
   ctx: BaseAudioContext,
   soundscapeId: SoundscapeId,
@@ -983,7 +1020,7 @@ export function playContinuousSoundscape(
 ) {
   if (volume <= 0.01) return;
 
-  const panNode = ctx.createStereoPanner();
+  const panNode = createSafePanner(ctx, pan);
   panNode.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), startTime);
 
   const masterVolNode = ctx.createGain();
@@ -1697,8 +1734,7 @@ export async function renderCompositionToWav(
       if (track.muted) continue;
       if (hasSolo && !track.solo) continue;
 
-      const trackPanNode = offlineCtx.createStereoPanner();
-      trackPanNode.pan.value = track.pan;
+      const trackPanNode = createSafePanner(offlineCtx, track.pan);
 
       const trackGainNode = offlineCtx.createGain();
       trackGainNode.gain.value = track.gain;

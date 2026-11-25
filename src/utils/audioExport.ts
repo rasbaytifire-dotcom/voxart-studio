@@ -75,3 +75,74 @@ export function audioBufferToWavBlob(buffer: AudioBuffer): Blob {
 
   return new Blob([arrayBuffer], { type: 'audio/wav' });
 }
+
+function buildCleanWavFilename(rawName: string): string {
+  const stripped = (rawName || 'audio_voxart')
+    .trim()
+    .replace(/\.(wav|mp3|ogg|webm|m4a|aac)$/i, '');
+  const safe = stripped.replace(/[\\/:*?"<>|]+/g, '_').trim();
+  return `${safe || 'audio_voxart'}.wav`;
+}
+
+function hasRiffWaveHeader(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false;
+  return (
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x41 && // A
+    bytes[10] === 0x56 && // V
+    bytes[11] === 0x45 // E
+  );
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/**
+ * Fetches an audio data URL / URL, converts it to a true 16-bit PCM WAV Blob
+ * if it is not already a RIFF/WAVE file, and downloads it as `<name>.wav`.
+ */
+export async function exportAudioDataAsWav(sourceUrl: string, rawName: string): Promise<void> {
+  const downloadName = buildCleanWavFilename(rawName);
+  const response = await fetch(sourceUrl);
+  if (!response.ok) {
+    throw new Error('Impossible de lire le fichier audio source.');
+  }
+
+  const sourceBlob = await response.blob();
+  const arrayBuffer = await sourceBlob.arrayBuffer();
+  const headerBytes = new Uint8Array(arrayBuffer.slice(0, 12));
+
+  if (hasRiffWaveHeader(headerBytes)) {
+    const wavBlob = new Blob([arrayBuffer], { type: 'audio/wav' });
+    triggerBlobDownload(wavBlob, downloadName);
+    return;
+  }
+
+  const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) {
+    triggerBlobDownload(new Blob([arrayBuffer], { type: 'audio/wav' }), downloadName);
+    return;
+  }
+
+  const audioCtx = new AudioCtx();
+  try {
+    const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    const wavBlob = audioBufferToWavBlob(decodedBuffer);
+    triggerBlobDownload(wavBlob, downloadName);
+  } finally {
+    audioCtx.close().catch(() => {});
+  }
+}
+

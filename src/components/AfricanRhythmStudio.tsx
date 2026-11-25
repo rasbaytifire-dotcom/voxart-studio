@@ -16,7 +16,8 @@ import {
 import { 
   AFRICAN_INSTRUMENTS, DEFAULT_EFFECTS_CONFIG, 
   TRADITIONAL_RHYTHM_PRESETS, buildEffectsRack, 
-  playAfricanInstrument, renderCompositionToWav 
+  playAfricanInstrument, renderCompositionToWav,
+  createSafePanner, SafePanNode 
 } from '../utils/africanAudioEngine';
 
 interface AfricanRhythmStudioProps {
@@ -207,7 +208,7 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
   const currentStepRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(false);
   const masterRackRef = useRef<{ input: GainNode; output: GainNode } | null>(null);
-  const trackNodesRef = useRef<Map<number, { gainNode: GainNode; panNode: StereoPannerNode }>>(new Map());
+  const trackNodesRef = useRef<Map<number, { gainNode: GainNode; panNode: SafePanNode }>>(new Map());
 
   // Tap tempo state
   const tapTimesRef = useRef<number[]>([]);
@@ -220,20 +221,27 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
   const getAudioContext = (): AudioContext => {
     if (!audioCtxRef.current) {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) {
+        throw new Error("L'API Web Audio n'est pas supportée sur cet appareil.");
+      }
       audioCtxRef.current = new AudioCtx();
 
-      // Analyser for real-time oscilloscope
-      const analyser = audioCtxRef.current.createAnalyser();
-      analyser.fftSize = 256;
-      analyserRef.current = analyser;
+      try {
+        // Analyser for real-time oscilloscope
+        const analyser = audioCtxRef.current.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
 
-      const rack = buildEffectsRack(audioCtxRef.current, composition.effects);
-      rack.output.connect(analyser);
-      analyser.connect(audioCtxRef.current.destination);
-      masterRackRef.current = rack;
+        const rack = buildEffectsRack(audioCtxRef.current, composition.effects);
+        rack.output.connect(analyser);
+        analyser.connect(audioCtxRef.current.destination);
+        masterRackRef.current = rack;
+      } catch (e) {
+        console.warn("Effects rack initialization warning:", e);
+      }
     }
     if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
+      audioCtxRef.current.resume().catch(() => {});
     }
     return audioCtxRef.current;
   };
@@ -271,7 +279,7 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
       let nodeData = trackNodesRef.current.get(trackIdx);
       if (!nodeData) {
         const gainNode = ctx.createGain();
-        const panNode = ctx.createStereoPanner();
+        const panNode = createSafePanner(ctx, track.pan);
         gainNode.gain.setValueAtTime(track.gain, now);
         panNode.pan.setValueAtTime(track.pan, now);
         gainNode.connect(panNode);
@@ -384,7 +392,7 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
         let nodeData = trackNodesRef.current.get(trackIdx);
         if (!nodeData) {
           const gainNode = ctx.createGain();
-          const panNode = ctx.createStereoPanner();
+          const panNode = createSafePanner(ctx, track.pan);
           gainNode.gain.value = track.gain;
           panNode.pan.value = track.pan;
 

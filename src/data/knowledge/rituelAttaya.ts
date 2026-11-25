@@ -18,5 +18,5 @@ CHAPITRE 5 : LE RITUEL DE L'ATTAYA (THÉ SÉNÉGALAIS) ET SCÉNOGRAPHIE LUMINEUS
 - Ambiance scénographique : Nuit tombante, clair de lune bleu cobalt, reflets cyan des circuits imprimés. Clôture de la session artistique.
 
 5.4 Règle d'or botanique :
-- Utilisation exclusive du Baobab sénégalais (Gouye / Adansonia digitata) : trône massif, trapu, cannelé, branches noueuses. Interdiction absolue d'employer la silhouette lisse du baobab de Madagascar.
+- Utilisation exclusive du Baobab sénégalais (Gouye / Adansonia digitata) : tronc massif, trapu, cannelé, branches noueuses. Interdiction absolue d'employer la silhouette lisse du baobab de Madagascar.
 `;

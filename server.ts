@@ -6,7 +6,7 @@
 import http from "http";
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { WebSocketServer, WebSocket } from "ws";
 import multer from "multer";
 import dotenv from "dotenv";
@@ -105,7 +105,7 @@ async function startServer() {
   });
 
   // App version and live update verification endpoint
-  const APP_VERSION = "2.4.2";
+  const APP_VERSION = "3.0.0";
   const APP_RELEASE_TIME = Date.now();
   app.get("/api/version", (_req, res) => {
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -142,7 +142,7 @@ function cleanTextForSpeech(text: string): string {
   // TTS API Endpoint with automatic model fallback for quota management
   app.post("/api/tts", async (req, res) => {
     try {
-      const { text, voiceName = "Kore", model = "gemini-3.8-flash-lite-tts", style, language, gender, multiSpeaker, speakers } = req.body;
+      const { text, voiceName = "Kore", model = "gemini-3.8-flash-lite-tts", style, customVoiceStyle, language, gender, multiSpeaker, speakers } = req.body;
       const sanitizedText = cleanTextForSpeech(text || "");
       const effectiveKey = extractEffectiveApiKey(req);
 
@@ -190,14 +190,22 @@ function cleanTextForSpeech(text: string): string {
           },
         });
       } else {
+        const cleanCustomStyle = typeof customVoiceStyle === 'string' ? customVoiceStyle.trim() : '';
         const comprehensiveStyle = [
           language ? `Langue: ${language}` : '',
           gender ? `Timbre: ${gender}` : '',
-          style ? `Style: ${style}` : ''
+          cleanCustomStyle ? `Empreinte vocale personnalisée (Voice Design): ${cleanCustomStyle}` : '',
+          style && (!cleanCustomStyle || !cleanCustomStyle.includes(style)) ? `Style contextuel: ${style}` : ''
         ].filter(Boolean).join('. ');
 
-        // Automatic fallback chain between Gemini TTS models to bypass single-model quota limits
-        const modelsChain = [model || "gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts"];
+        // When a custom Voice Design directive is provided, prefer gemini-3.8-flash-tts first
+        const preferredModel = cleanCustomStyle
+          ? "gemini-3.8-flash-tts"
+          : (model || "gemini-3.8-flash-lite-tts");
+        const fallbackModel = preferredModel === "gemini-3.8-flash-tts"
+          ? "gemini-3.8-flash-lite-tts"
+          : "gemini-3.8-flash-tts";
+        const modelsChain = [preferredModel, fallbackModel];
         const uniqueModels = Array.from(new Set(modelsChain));
 
         let lastError;
@@ -681,6 +689,209 @@ RÈGLES SRT STRICTES :
     } catch (err: any) {
       console.error("Transcription error:", err);
       res.status(500).json({ error: "Erreur lors de la transcription du fichier audio/vidéo" });
+    } finally {
+      if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+      if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+    }
+  });
+
+  // Acoustic Voice Profile Analysis Endpoint (Audio Sample -> Voice Design Parameters)
+  app.post("/api/voice-profile/analyze", upload.single("file"), async (req, res) => {
+    const fs = (await import('fs')).default;
+    const path = (await import('path')).default;
+    const ffmpeg = (await import('fluent-ffmpeg')).default;
+    const os = (await import('os')).default;
+
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tempInputPath = path.join(os.tmpdir(), `voice-in-${stamp}`);
+    const tempOutputPath = path.join(os.tmpdir(), `voice-out-${stamp}.mp3`);
+
+    try {
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ error: "Aucun fichier ou enregistrement vocal fourni." });
+      }
+
+      const effectiveKey = extractEffectiveApiKey(req);
+      if (!effectiveKey) {
+        return res.status(401).json({ error: "Clé API Gemini requise pour analyser l'empreinte vocale. Configurez-la dans les Réglages." });
+      }
+
+      fs.writeFileSync(tempInputPath, file.buffer);
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(tempInputPath)
+          .noVideo()
+          .toFormat('mp3')
+          .audioChannels(1)
+          .audioBitrate('64k')
+          .audioFrequency(16000)
+          .on('end', () => resolve())
+          .on('error', () => {
+            ffmpeg(tempInputPath)
+              .toFormat('mp3')
+              .audioChannels(1)
+              .audioBitrate('64k')
+              .on('end', () => resolve())
+              .on('error', reject)
+              .save(tempOutputPath);
+          })
+          .save(tempOutputPath);
+      });
+
+      const audioBuffer = fs.readFileSync(tempOutputPath);
+      const effectiveAi = getEffectiveAi(effectiveKey);
+
+      const analysisPrompt = `Tu es un ingénieur du son et directeur artistique spécialisé dans l'analyse acoustique et le Voice Design.
+Écoute attentivement cet extrait vocal et extrais son profil acoustique pour configurer une voix de synthèse expressive fidèle à son caractère :
+
+1. recommendedBaseVoice : Choisis la voix Gemini de base la plus proche parmi EXACTEMENT ces 5 valeurs :
+   - "Charon" : voix masculine grave, profonde, résonnante et posée
+   - "Fenrir" : voix masculine directe, nette, structurée
+   - "Puck" : voix masculine claire, dynamique et énergique
+   - "Kore" : voix féminine mélodieuse, articulée et chaleureuse
+   - "Zephyr" : voix féminine douce, feutrée et apaisante
+2. estimatedPitchFactor : facteur de calibrage entre 0.80 et 1.20 (1.00 = neutre ; < 1.00 si la voix est plus grave que la base choisie ; > 1.00 si plus claire/aiguë).
+3. detectedGenderLabel : une des 3 descriptions exactes suivantes selon le registre entendu :
+   - "voix masculine grave, profonde et résonnante (homme)"
+   - "voix féminine mélodieuse, claire et expressive (femme)"
+   - "voix neutre, posée et feutrée"
+4. detectedPace : rythme d'élocution parmi EXACTEMENT : "lent", "pose", "naturel", "dynamique", "rapide".
+5. detectedTimbreTags : liste de 2 à 4 qualificatifs courts en français (ex: ["Grave & Boisé", "Chaleureux", "Posé & Serein"]).
+6. voiceDesignPrompt : consigne détaillée en français (2 phrases max) décrivant le grain de voix, l'intonation, la respiration, l'accentuation et la présence microphonique à reproduire en synthèse vocale.
+7. analysisSummary : court bilan en français (1 à 2 phrases) expliquant ce qui a été détecté dans l'échantillon audio.`;
+
+      const modelsToTry = ["gemini-4-hydrogen", "gemini-3.1-flash-lite"];
+      let analysisJson: any = null;
+      let lastError: any = null;
+
+      for (const m of modelsToTry) {
+        try {
+          const response = await effectiveAi.models.generateContent({
+            model: m,
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "audio/mp3",
+                    data: audioBuffer.toString("base64"),
+                  },
+                },
+                { text: analysisPrompt },
+              ],
+            },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  recommendedBaseVoice: {
+                    type: Type.STRING,
+                    description: "Must be one of Charon, Fenrir, Puck, Kore, Zephyr",
+                  },
+                  estimatedPitchFactor: {
+                    type: Type.NUMBER,
+                    description: "Pitch calibration factor between 0.80 and 1.20",
+                  },
+                  detectedGenderLabel: {
+                    type: Type.STRING,
+                    description: "Gender/timbre preset string",
+                  },
+                  detectedPace: {
+                    type: Type.STRING,
+                    description: "Must be one of lent, pose, naturel, dynamique, rapide",
+                  },
+                  detectedTimbreTags: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "2 to 4 short French timbre adjectives",
+                  },
+                  voiceDesignPrompt: {
+                    type: Type.STRING,
+                    description: "French Voice Design style instruction",
+                  },
+                  analysisSummary: {
+                    type: Type.STRING,
+                    description: "Short French summary of acoustic analysis",
+                  },
+                },
+                required: [
+                  "recommendedBaseVoice",
+                  "estimatedPitchFactor",
+                  "detectedGenderLabel",
+                  "detectedPace",
+                  "detectedTimbreTags",
+                  "voiceDesignPrompt",
+                  "analysisSummary",
+                ],
+              },
+            },
+          });
+
+          const rawText = (response.text || "").trim();
+          if (rawText) {
+            analysisJson = JSON.parse(rawText);
+            break;
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Voice profile analysis attempt with ${m} failed:`, err?.message || err);
+        }
+      }
+
+      if (!analysisJson) {
+        throw lastError || new Error("Impossible d'analyser l'échantillon vocal.");
+      }
+
+      const validVoices = ["Charon", "Fenrir", "Puck", "Kore", "Zephyr"];
+      const validPaces = ["lent", "pose", "naturel", "dynamique", "rapide"];
+      const recommendedBaseVoice = validVoices.includes(analysisJson.recommendedBaseVoice)
+        ? analysisJson.recommendedBaseVoice
+        : "Charon";
+      const detectedPace = validPaces.includes(analysisJson.detectedPace)
+        ? analysisJson.detectedPace
+        : "pose";
+      const pitchNum = Number(analysisJson.estimatedPitchFactor);
+      const estimatedPitchFactor = Number.isFinite(pitchNum)
+        ? Math.round(Math.max(0.8, Math.min(1.2, pitchNum)) * 100) / 100
+        : 1.0;
+
+      res.json({
+        recommendedBaseVoice,
+        estimatedPitchFactor,
+        detectedGenderLabel:
+          typeof analysisJson.detectedGenderLabel === "string" && analysisJson.detectedGenderLabel.trim()
+            ? analysisJson.detectedGenderLabel.trim()
+            : "voix masculine grave, profonde et résonnante (homme)",
+        detectedPace,
+        detectedTimbreTags: Array.isArray(analysisJson.detectedTimbreTags)
+          ? analysisJson.detectedTimbreTags.slice(0, 5).map(String)
+          : ["Chaleureux", "Posé & Serein"],
+        voiceDesignPrompt:
+          typeof analysisJson.voiceDesignPrompt === "string"
+            ? analysisJson.voiceDesignPrompt.trim()
+            : "",
+        analysisSummary:
+          typeof analysisJson.analysisSummary === "string"
+            ? analysisJson.analysisSummary.trim()
+            : "Analyse acoustique terminée.",
+      });
+    } catch (err: any) {
+      console.error("Voice profile analysis error:", err);
+      const msg = err?.message || "";
+      if (err?.status === 429 || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
+        return res.status(429).json({
+          error: "Quota Gemini temporairement atteint pour l'analyse vocale. Réessayez dans un instant ou sculptez votre profil manuellement ci-dessous.",
+        });
+      }
+      if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || err?.status === 400) {
+        return res.status(401).json({
+          error: "Clé API Gemini invalide ou expirée. Vérifiez votre clé dans les Réglages.",
+        });
+      }
+      res.status(500).json({
+        error: "L'analyse acoustique de l'audio a échoué. Vérifiez que votre extrait contient bien de la parole audible.",
+      });
     } finally {
       if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
       if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);

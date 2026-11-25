@@ -77,7 +77,7 @@ export const KnowledgeBaseManager: React.FC<KnowledgeBaseManagerProps> = ({ apiK
           id: 'chunk-default-2',
           title: 'Polyrythmie Plastique - Axes Fondateurs',
           category: 'axes',
-          content: 'Transposition visuelle des musiques sénégalaises (Sabar, Kora, Tama, Riti). Juxtaposition de motifs (Rabal, Bogolan) et de circuits imprimés.',
+          content: 'Transposition plastique des musiques sénégalaises (Sabar, Kora, Tama, Riti). Juxtaposition de motifs (Rabal, Bogolan) et de circuits imprimés.',
           embedding: [],
           createdAt: new Date().toISOString(),
           status: 'indexed'

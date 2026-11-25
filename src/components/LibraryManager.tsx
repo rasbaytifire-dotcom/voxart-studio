@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { exportAudioDataAsWav } from '../utils/audioExport';
 
 export interface SavedAudioItem {
   id: number;
@@ -1267,14 +1268,22 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
                         <span>Écouter</span>
                       </button>
 
-                      <a
-                        href={item.data}
-                        download={`${item.name}.wav`}
-                        className="p-1 rounded bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1]"
-                        title="Télécharger"
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await exportAudioDataAsWav(item.data, item.name);
+                            showToast(`Audio "${item.name}" exporté en WAV !`, "success");
+                          } catch {
+                            showToast("Erreur lors de l'export WAV.", "error");
+                          }
+                        }}
+                        className="px-2 py-0.5 rounded bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                        title="Exporter en WAV"
                       >
                         <Download className="w-3 h-3" />
-                      </a>
+                        <span>Exporter WAV</span>
+                      </button>
 
                       <button
                         onClick={() => {
