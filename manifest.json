@@ -1,0 +1,103 @@
+{
+  "id": "/",
+  "name": "VoxArt Studio",
+  "short_name": "VoxArt",
+  "description": "Studio professionnel de synthèse vocale par IA text-to-speech propulsé par Google Gemini avec doublage vidéo, sous-titres SRT, rythmes africains et projets.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
+  "background_color": "#181825",
+  "theme_color": "#1e1e2e",
+  "categories": ["multimedia", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "media",
+          "accept": [
+            "audio/*",
+            "video/*",
+            "text/plain",
+            "text/vtt",
+            "application/x-subrip",
+            "application/json",
+            ".mp3",
+            ".wav",
+            ".ogg",
+            ".m4a",
+            ".aac",
+            ".flac",
+            ".mp4",
+            ".webm",
+            ".mov",
+            ".mkv",
+            ".avi",
+            ".m4v",
+            ".txt",
+            ".srt",
+            ".vtt",
+            ".md",
+            ".json"
+          ]
+        }
+      ]
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "/?open-with=1",
+      "accept": {
+        "audio/*": [".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".webm"],
+        "video/*": [".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"],
+        "text/plain": [".txt", ".srt", ".vtt", ".md"],
+        "application/x-subrip": [".srt"],
+        "text/vtt": [".vtt"],
+        "application/json": [".json"]
+      }
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Studio Vocal",
+      "short_name": "Vocal",
+      "description": "Synthèse vocale et voix off",
+      "url": "/#/vocal/studio",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Doublage Vidéo & SRT",
+      "short_name": "Doublage",
+      "description": "Voix off, micro et sous-titres .SRT",
+      "url": "/#/video/doublage",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}

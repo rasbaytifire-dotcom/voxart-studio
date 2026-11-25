@@ -317,20 +317,38 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
 
         {/* Barre Réglages Montage : Sous-titres & Voix Off / Micro */}
         {onOpenProjectVideoStudio && (
-          <div className="bg-[#1e1e2e] border border-[#89b4fa]/35 rounded-2xl p-3.5 space-y-2.5">
+          <div className="bg-[#1e1e2e] border border-[#89b4fa]/40 rounded-2xl p-4 space-y-3 shadow-lg">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs sm:text-sm font-bold text-[#cdd6f4] flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-[#89b4fa]" />
-                  <span>Réglages Montage du Projet : Voix Off & Sous-titres</span>
+                  <Film className="w-4 h-4 text-[#89b4fa]" />
+                  <span>Studio Vidéo du Projet : Audio, Mixage & Sous-titres</span>
                 </h3>
                 <p className="text-[11px] text-[#a6adc8] mt-0.5">
-                  Assemblez vos médias du projet : générez les sous-titres SRT, enregistrez votre voix au micro ou posez une voix off.
+                  Chargez ce projet, mixez l'audio, générez les sous-titres et exportez la vidéo complète.
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {/* Primary Hero Button */}
+            <button
+              type="button"
+              onClick={() =>
+                onOpenProjectVideoStudio({
+                  projectName: selectedProject,
+                  videoItem: activeProjectData.videos?.[0] || null,
+                  textItem: activeProjectData.texts?.[0] || null,
+                  audioItem: activeProjectData.audios?.[0] || null,
+                  focusSection: 'voiceover',
+                })
+              }
+              className="w-full min-h-[50px] px-4 py-3 rounded-xl bg-gradient-to-r from-[#89b4fa] via-[#cba6f7] to-[#fab387] text-[#11111b] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(137,180,250,0.3)] hover:opacity-95 cursor-pointer transition-transform duration-200 hover:scale-[1.01]"
+            >
+              <Film className="w-5 h-5 shrink-0" />
+              <span>🎬 Créer / Mixer la Vidéo avec Audio & Sous-titres</span>
+            </button>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
               <button
                 type="button"
                 onClick={() =>
@@ -341,7 +359,7 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                     focusSection: 'subtitles',
                   })
                 }
-                className="min-h-[44px] px-3 py-2 rounded-xl bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+                className="min-h-[44px] px-3 py-2 rounded-xl bg-[#181825] border border-[#89b4fa]/40 hover:border-[#89b4fa] text-[#89b4fa] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
               >
                 <Subtitles className="w-4 h-4 shrink-0" />
                 <span>Générer / Éditer Sous-titres</span>
@@ -376,8 +394,8 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                 }
                 className="min-h-[44px] px-3 py-2 rounded-xl bg-[#181825] border border-[#a6e3a1]/40 hover:border-[#a6e3a1] text-[#a6e3a1] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
               >
-                <Film className="w-4 h-4 shrink-0" />
-                <span>Studio Montage Vidéo</span>
+                <Music className="w-4 h-4 shrink-0" />
+                <span>Mixage & Voix Off</span>
               </button>
             </div>
           </div>

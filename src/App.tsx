@@ -1450,6 +1450,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    // 1. Load instantly from LocalStorage / IndexedDB (Offline-First Primary Data Source)
     const loadedLib = JSON.parse(localStorage.getItem('voxart_library') || '{}');
     if (loadedLib && Object.keys(loadedLib).length > 0) {
       setLibrary(loadedLib);
@@ -1458,26 +1459,30 @@ export default function App() {
         const main = offlineProjects.find(p => p.id === 'main_library');
         if (main && main.library && Object.keys(main.library).length > 0) {
           setLibrary(main.library);
+          localStorage.setItem('voxart_library', JSON.stringify(main.library));
         }
       }).catch(() => {});
     }
 
-    // Sync from Firebase Cloud Firestore
-    ensureAuth().then(async () => {
-      try {
-        const docRef = doc(db, 'vox_library', 'main_library');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const cloudData = docSnap.data().library as Record<string, ProjectData>;
-          if (cloudData && Object.keys(cloudData).length > 0) {
-            setLibrary(cloudData);
-            localStorage.setItem('voxart_library', JSON.stringify(cloudData));
+    // 2. Sync from Firebase Cloud Firestore only when online
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      ensureAuth().then(async () => {
+        try {
+          const docRef = doc(db, 'vox_library', 'main_library');
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            const cloudData = docSnap.data().library as Record<string, ProjectData>;
+            if (cloudData && Object.keys(cloudData).length > 0) {
+              setLibrary(cloudData);
+              localStorage.setItem('voxart_library', JSON.stringify(cloudData));
+              saveProjectOffline({ id: 'main_library', library: cloudData }).catch(() => {});
+            }
           }
+        } catch (e) {
+          console.warn("Cloud sync load error (offline fallback active):", e);
         }
-      } catch (e) {
-        console.warn("Cloud sync load error:", e);
-      }
-    });
+      }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -1503,23 +1508,25 @@ export default function App() {
 
   const saveLibraryToStorage = async (lib: Record<string, ProjectData>) => {
     setLibrary(lib);
+    // 1. Save immediately to LocalStorage and IndexedDB (Primary Offline-First Persistence)
     try {
       localStorage.setItem('voxart_library', JSON.stringify(lib));
     } catch (e: any) {
       console.warn("Storage quota exceeded:", e);
-      showToast("Stockage local saturé. Sauvegarde cloud Firebase active.", "info");
+      showToast("Stockage local saturé. Sauvegarde IndexedDB prioritaire active.", "info");
     }
 
-    // High-capacity offline persistence via IndexedDB
-    saveProjectOffline({ id: 'main_library', library: lib }).catch(() => {});
+    await saveProjectOffline({ id: 'main_library', library: lib }).catch(() => {});
 
-    // Sync to Firebase Cloud Firestore
-    try {
-      await ensureAuth();
-      const docRef = doc(db, 'vox_library', 'main_library');
-      await setDoc(docRef, { library: lib, updatedAt: new Date().toISOString() });
-    } catch (e) {
-      console.warn("Cloud sync save error:", e);
+    // 2. Sync to Firebase Cloud Firestore only if online
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      try {
+        await ensureAuth();
+        const docRef = doc(db, 'vox_library', 'main_library');
+        await setDoc(docRef, { library: lib, updatedAt: new Date().toISOString() });
+      } catch (e) {
+        console.warn("Cloud sync save deferred (offline mode):", e);
+      }
     }
   };
 
@@ -2462,16 +2469,37 @@ export default function App() {
       try {
         const content = event.target?.result as string;
         const parsed = JSON.parse(content);
+        
+        // Case 1: Full library database backup format ({ "Project1": { audios: [], texts: [] }, ... })
+        if (parsed && typeof parsed === 'object' && !parsed.projectName && !parsed.projectData) {
+          const keys = Object.keys(parsed);
+          if (keys.length > 0 && (parsed[keys[0]]?.audios || parsed[keys[0]]?.texts || typeof parsed[keys[0]] === 'object')) {
+            const updated = { ...library, ...parsed };
+            saveLibraryToStorage(updated);
+            showToast(`Base de bibliothèque importée avec succès (${keys.length} projet(s)) !`, "success");
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            return;
+          }
+        }
+
+        // Case 2: Single project export format ({ projectName, projectData })
         if (parsed.projectName && parsed.projectData) {
           const updated = { ...library, [parsed.projectName]: parsed.projectData };
           saveLibraryToStorage(updated);
           showToast(`Projet "${parsed.projectName}" importé avec succès dans la bibliothèque VoxArt !`, "success");
+        } 
+        // Case 3: Raw project data object ({ audios, texts })
+        else if (parsed && (parsed.audios || parsed.texts)) {
+          const pName = file.name.replace(/\.[^/.]+$/, "").replace(/_voxart.*$/, "") || "Projet Importé";
+          const updated = { ...library, [pName]: parsed };
+          saveLibraryToStorage(updated);
+          showToast(`Projet "${pName}" importé avec succès !`, "success");
         } else {
-          showToast("Format de fichier de partage VoxArt invalide.", "error");
+          showToast("Format de fichier de sauvegarde VoxArt non reconnu.", "error");
         }
       } catch (err) {
         console.error(err);
-        showToast("Erreur lors de l'importation du fichier projet.", "error");
+        showToast("Erreur lors de l'importation du fichier de sauvegarde.", "error");
       }
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
@@ -2543,13 +2571,39 @@ export default function App() {
   const shareAudioItem = async (base64Data: string, filename: string) => {
     try {
       const res = await fetch(base64Data);
-      const blob = await res.blob();
-      const file = new File([blob], `${filename}.wav`, { type: 'audio/wav' });
+      const sourceBlob = await res.blob();
+      const arrayBuffer = await sourceBlob.arrayBuffer();
+
+      let wavBlob: Blob;
+      const headerBytes = new Uint8Array(arrayBuffer.slice(0, 12));
+      const hasRiff = headerBytes[0] === 0x52 && headerBytes[1] === 0x49 && headerBytes[2] === 0x46 && headerBytes[3] === 0x46 &&
+                      headerBytes[8] === 0x57 && headerBytes[9] === 0x41 && headerBytes[10] === 0x56 && headerBytes[11] === 0x45;
+
+      if (hasRiff) {
+        wavBlob = new Blob([arrayBuffer], { type: 'audio/wav' });
+      } else {
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtx) {
+          const audioCtx = new AudioCtx();
+          try {
+            const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+            wavBlob = audioBufferToWavBlob(decodedBuffer);
+          } finally {
+            audioCtx.close().catch(() => {});
+          }
+        } else {
+          wavBlob = new Blob([arrayBuffer], { type: 'audio/wav' });
+        }
+      }
+
+      const safeName = (filename || 'audio_voxart').trim().replace(/\.[^/.]+$/, "").replace(/[\\/:*?"<>|]+/g, '_');
+      const file = new File([wavBlob], `${safeName}.wav`, { type: 'audio/wav' });
+
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           files: [file],
-          title: filename,
-          text: `VoxArt (Studio RidiaLArt-Vision) - Fichier audio : ${filename}`
+          title: safeName,
+          text: `VoxArt (Studio RidiaLArt-Vision) - Fichier audio : ${safeName}`
         });
       } else {
         showToast("Le partage direct de fichiers n'est pas pris en charge par votre navigateur. Utilisez le téléchargement ⬇️.", "info");
@@ -2561,7 +2615,6 @@ export default function App() {
         errorObj?.message?.toLowerCase().includes('cancel') ||
         errorObj?.message?.toLowerCase().includes('abort')
       ) {
-        // User closed/cancelled the share dialog normally; no action needed
         return;
       }
       console.error(err);
@@ -3260,6 +3313,11 @@ ${item.text}`;
                 onOpenRhythmStudio={() => navigateHash('music_rhythm')}
                 showToast={showToast}
                 onClose={() => navigateHash('home')}
+                scriptText={text}
+                onExportLyricVideo={() => {
+                  navigateHash('video_dubbing');
+                  showToast("Redirection vers le studio de doublage vidéo pour l’incrustation et l’export vidéo.", "success");
+                }}
               />
             </div>
           </ErrorBoundary>

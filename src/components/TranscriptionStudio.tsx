@@ -2722,7 +2722,28 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
           <div className="p-4 bg-[#11111b] rounded-xl border border-[#89b4fa]/35 space-y-3">
             <div className="flex items-center justify-between text-xs font-bold text-[#89b4fa]">
               <span>Paramètres de Lisibilité & Synchronisation SRT</span>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (segments.length === 0) return;
+                    const span = voiceoverDuration > 1 ? voiceoverDuration : (duration > 1 ? duration : segments.length * 3);
+                    const chunkTime = span / segments.length;
+                    let cursor = Math.max(0, voiceDelaySeconds);
+                    const updated = segments.map((seg) => {
+                      const start = Number(cursor.toFixed(2));
+                      const end = Number((cursor + Math.max(1.2, chunkTime - 0.05)).toFixed(2));
+                      cursor = end + 0.05;
+                      return { ...seg, start, end };
+                    });
+                    setSegments(updated);
+                    addToast("Sous-titres étalés uniformément sur la durée de la voix.", "success");
+                  }}
+                  disabled={segments.length === 0}
+                  className="px-2.5 py-1 rounded bg-[#89b4fa]/20 border border-[#89b4fa]/40 text-[11px] text-[#89b4fa] font-semibold hover:bg-[#89b4fa]/30 disabled:opacity-40 cursor-pointer"
+                >
+                  Étaler uniformément
+                </button>
                 <button
                   type="button"
                   onClick={() => handleShiftAllSegments(-0.5)}

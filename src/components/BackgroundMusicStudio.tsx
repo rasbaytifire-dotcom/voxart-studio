@@ -7,7 +7,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Music, Sliders, Disc, Play, Pause, Volume2, Upload, 
   Folder, Sparkles, RefreshCw, X, Headphones, Mic, 
-  Layers, Plus, Check, Waves, Radio, Trash2, ArrowRight
+  Layers, Plus, Check, Waves, Radio, Trash2, ArrowRight,
+  Subtitles, Film
 } from 'lucide-react';
 import { 
   TRADITIONAL_RHYTHM_PRESETS, 
@@ -52,6 +53,9 @@ interface BackgroundMusicStudioProps {
   onOpenRhythmStudio: () => void;
   showToast: (msg: string, type?: 'info' | 'success' | 'error') => void;
   onClose: () => void;
+  scriptText?: string;
+  segments?: any[];
+  onExportLyricVideo?: () => void;
 }
 
 export const BackgroundMusicStudio: React.FC<BackgroundMusicStudioProps> = ({
@@ -79,7 +83,10 @@ export const BackgroundMusicStudio: React.FC<BackgroundMusicStudioProps> = ({
   library,
   onOpenRhythmStudio,
   showToast,
-  onClose
+  onClose,
+  scriptText,
+  segments = [],
+  onExportLyricVideo,
 }) => {
   // Navigation tabs for selecting or composing background music
   const [activeTab, setActiveTab] = useState<'rhythms' | 'soundscapes' | 'library' | 'upload'>('rhythms');
@@ -926,6 +933,52 @@ export const BackgroundMusicStudio: React.FC<BackgroundMusicStudioProps> = ({
         backingVolume={backingVolume}
         title="Analyseur de Spectre Fréquentiel (Voix vs Fond Sonore)"
       />
+
+      {/* VISUALISATION & INCRUSTATION DES PAROLES (LYRIC VIDEO) */}
+      <div className="p-4 rounded-xl bg-gradient-to-r from-[#181825] via-[#24172a] to-[#1c1429] border border-[#cba6f7]/40 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-[#cba6f7]/15 text-[#cba6f7]">
+              <Subtitles className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                <span>Incrustation Visuelle & Paroles Synchronisées (Lyric Video)</span>
+                <span className="text-[10px] bg-[#cba6f7]/20 text-[#cba6f7] px-2 py-0.5 rounded-full font-mono">
+                  {segments.length > 0 ? `${segments.length} segments SRT` : 'Mode Texte Libre'}
+                </span>
+              </h4>
+              <p className="text-[11px] text-[#a6adc8]">
+                Générez une vidéo musicale incrustant les paroles synchronisées avec la voix sur fond visuel
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {scriptText && (
+          <div className="p-2.5 bg-[#11111b] rounded-lg border border-[#313244] max-h-20 overflow-y-auto text-[11px] text-[#cdd6f4] font-sans">
+            {scriptText}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              if (onExportLyricVideo) {
+                onExportLyricVideo();
+              } else {
+                showToast("Veuillez utiliser le studio de doublage vidéo pour exporter la vidéo avec sous-titres incrustés.", "info");
+              }
+            }}
+            disabled={!currentAudioBlob}
+            className="w-full sm:w-auto py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#cba6f7] to-[#89b4fa] text-[#11111b] font-bold text-xs shadow-md hover:opacity-95 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+          >
+            <Film className="w-4 h-4" />
+            <span>Exporter en Vidéo Lyrique (.MP4 avec Paroles)</span>
+          </button>
+        </div>
+      </div>
 
       {/* DUAL ACTION BUTTONS: INSTANT LIVE MIX VS FINAL MERGE TO DISK */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
