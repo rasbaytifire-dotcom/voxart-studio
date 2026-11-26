@@ -10,7 +10,7 @@ import {
   Square, Settings, FolderPlus
 } from 'lucide-react';
 import { copyTextToClipboard } from '../utils/clipboard';
-import { authFetch, apiAuthStore } from '../services/apiAuth';
+import { authFetch, apiAuthStore, safeJsonResponse } from '../services/apiAuth';
 
 interface ChatMessage {
   role: 'user' | 'model';
@@ -179,7 +179,7 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
         })
       }, effectiveKey);
 
-      const data = await res.json();
+      const data = await safeJsonResponse<any>(res, "de l'agent");
       if (!res.ok) {
         throw new Error(data.error || "Erreur de communication avec l'agent.");
       }

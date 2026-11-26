@@ -68,7 +68,7 @@ import {
 } from './utils/africanAudioEngine';
 import { cleanTextForSpeech } from './utils/textCleaner';
 import { copyTextToClipboard } from './utils/clipboard';
-import { useApiAuth, authFetch, apiAuthStore } from './services/apiAuth';
+import { useApiAuth, authFetch, apiAuthStore, safeJsonResponse } from './services/apiAuth';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import {
   consumePendingShares,
@@ -1355,7 +1355,7 @@ export default function App() {
         throw new Error(`API response status ${res.status}`);
       }
 
-      const data: SentimentAnalysisResult = await res.json();
+      const data: SentimentAnalysisResult = await safeJsonResponse<SentimentAnalysisResult>(res, "d'analyse de style");
       if (data && data.suggestedStyleVal) {
         setSentimentResult(data);
         if (autoApplySentimentStyle || forced) {
@@ -1621,7 +1621,7 @@ export default function App() {
         })
       }, 3, effectiveKey);
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'du moteur vocal');
       if (data.fallback || data.isKeyError || !response.ok) {
         console.warn("Gemini TTS fallback:", data.message || data.error);
         const hasBrowserSpeech = typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis;
@@ -2838,7 +2838,7 @@ export default function App() {
           })
         }, 3, effectiveKey);
 
-        const data = await response.json();
+        const data = await safeJsonResponse<any>(response, 'du moteur vocal');
         if (!response.ok || data.fallback || data.error || !data.audio) {
           throw new Error(data.message || data.error || `Erreur serveur ${response.status}`);
         }
@@ -2951,7 +2951,7 @@ ${textToRead}`;
         })
       }, 3, effectiveKey);
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'du moteur vocal');
       if (!response.ok || data.fallback || data.error || !data.audio) {
         throw new Error(data.message || data.error || `Erreur ${response.status}`);
       }

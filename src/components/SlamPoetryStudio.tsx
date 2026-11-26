@@ -35,7 +35,7 @@ import {
   toCustomVoiceOptionId,
   resolveVoicePayloadForTTS,
 } from '../utils/customVoiceStorage';
-import { authFetch, apiAuthStore } from '../services/apiAuth';
+import { authFetch, apiAuthStore, safeJsonResponse } from '../services/apiAuth';
 import { cleanTextForSpeech } from '../utils/textCleaner';
 import { buildSlamSubtitles, computeSlamMetrics } from '../utils/slamMetrics';
 import {
@@ -406,7 +406,7 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
         }),
       }, effectiveKey);
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'du moteur vocal');
       if (!response.ok || !data.audio || data.fallback) {
         throw new Error(data.error || data.message || 'Erreur lors de la génération vocale');
       }
@@ -416,7 +416,13 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
-      const blob = new Blob([bytes], { type: 'audio/wav' });
+      const isRiffWav =
+        bytes.length >= 4 &&
+        bytes[0] === 0x52 &&
+        bytes[1] === 0x49 &&
+        bytes[2] === 0x46 &&
+        bytes[3] === 0x46;
+      const blob = new Blob([bytes], { type: isRiffWav ? 'audio/wav' : 'audio/mp3' });
       const url = URL.createObjectURL(blob);
 
       if (voiceAudioUrl?.startsWith('blob:')) URL.revokeObjectURL(voiceAudioUrl);
@@ -823,7 +829,7 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
       });
 
       if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
+        const errJson = await safeJsonResponse<any>(response, 'du compilateur vidéo').catch((e) => ({ error: e?.message }));
         throw new Error(errJson.error || 'Échec de la compilation MP4 côté serveur.');
       }
 

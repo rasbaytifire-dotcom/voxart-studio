@@ -34,7 +34,7 @@ import {
   toCustomVoiceOptionId,
 } from '../utils/customVoiceStorage';
 import { StudioThemeMode } from './ThemeModeSelector';
-import { authFetch } from '../services/apiAuth';
+import { authFetch, safeJsonResponse } from '../services/apiAuth';
 
 interface CustomVoiceStudioProps {
   customVoices: CustomVoiceProfile[];
@@ -254,7 +254,7 @@ export const CustomVoiceStudio: React.FC<CustomVoiceStudioProps> = ({
         apiKey
       );
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, "de l'analyse vocale");
       if (!response.ok) {
         throw new Error(data?.error || 'Erreur lors de l’analyse vocale');
       }
@@ -323,7 +323,7 @@ export const CustomVoiceStudio: React.FC<CustomVoiceStudioProps> = ({
         apiKey
       );
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'du moteur vocal');
       if (!response.ok || data.fallback || !data.audio) {
         throw new Error(
           data?.message ||

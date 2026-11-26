@@ -11,7 +11,7 @@ import {
 import { db, ensureAuth } from '../firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
 import { cosineSimilarity } from '../utils/vector';
-import { apiAuthStore, authFetch } from '../services/apiAuth';
+import { apiAuthStore, authFetch, safeJsonResponse } from '../services/apiAuth';
 
 interface KnowledgeChunkItem {
   id: string;
@@ -134,7 +134,7 @@ export const KnowledgeBaseManager: React.FC<KnowledgeBaseManagerProps> = ({ apiK
           })
         }, effectiveKey);
         if (embedRes.ok) {
-          const embedData = await embedRes.json();
+          const embedData = await safeJsonResponse<any>(embedRes, "d'indexation");
           if (Array.isArray(embedData.embedding)) {
             embedding = embedData.embedding;
           }
@@ -215,7 +215,7 @@ export const KnowledgeBaseManager: React.FC<KnowledgeBaseManagerProps> = ({ apiK
       if (!embedRes.ok) {
         throw new Error("Erreur serveur lors de la génération de l'embedding.");
       }
-      const embedData = await embedRes.json();
+      const embedData = await safeJsonResponse<any>(embedRes, 'de recherche sémantique');
       const queryEmbedding = embedData.embedding;
 
       if (!queryEmbedding || !Array.isArray(queryEmbedding)) {

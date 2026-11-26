@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, CheckCircle2, ArrowDownCircle, AlertCircle, Sparkles, Smartphone, Trash2 } from 'lucide-react';
+import { safeJsonResponse } from '../services/apiAuth';
 
 export const APP_VERSION = "3.0.0";
 
@@ -48,7 +49,7 @@ export function useAppUpdate(showToast?: (msg: string, type?: 'info' | 'success'
           headers: { 'Cache-Control': 'no-cache, no-store' }
         });
         if (response.ok) {
-          const data = await response.json();
+          const data = await safeJsonResponse<any>(response, 'de version');
           remoteVersion = data.version || APP_VERSION;
           // Compare versions or check if server version is higher/different
           const localStoredVer = localStorage.getItem('voxart_client_version');

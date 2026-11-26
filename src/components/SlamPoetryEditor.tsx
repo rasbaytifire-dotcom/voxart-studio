@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Clock,
   Wind,
@@ -62,9 +62,16 @@ export const SlamPoetryEditor: React.FC<SlamPoetryEditorProps> = ({
       ? targetDurationSec
       : localTargetDuration;
 
+  const [durationDraft, setDurationDraft] = useState<string>(String(effectiveTargetDuration));
+
+  useEffect(() => {
+    setDurationDraft(String(effectiveTargetDuration));
+  }, [effectiveTargetDuration]);
+
   const updateTargetDuration = (nextSec: number) => {
     const safe = Math.max(5, Math.min(600, Math.round(nextSec || 30)));
     setLocalTargetDuration(safe);
+    setDurationDraft(String(safe));
     onChangeTargetDurationSec?.(safe);
   };
 
@@ -275,10 +282,28 @@ export const SlamPoetryEditor: React.FC<SlamPoetryEditorProps> = ({
                 min={5}
                 max={600}
                 step={5}
-                value={effectiveTargetDuration}
-                onChange={(e) => updateTargetDuration(Number(e.target.value))}
+                value={durationDraft}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setDurationDraft(raw);
+                  const parsed = parseInt(raw, 10);
+                  if (Number.isFinite(parsed) && parsed >= 5 && parsed <= 600) {
+                    setLocalTargetDuration(parsed);
+                    onChangeTargetDurationSec?.(parsed);
+                  }
+                }}
+                onBlur={() => {
+                  const parsed = parseInt(durationDraft, 10);
+                  if (!Number.isFinite(parsed) || parsed < 5) {
+                    updateTargetDuration(5);
+                  } else if (parsed > 600) {
+                    updateTargetDuration(600);
+                  } else {
+                    updateTargetDuration(parsed);
+                  }
+                }}
                 aria-label="Durée souhaitée en secondes"
-                className="w-12 px-1.5 py-0.5 rounded bg-[#181825] border border-[#313244] text-[10px] font-mono text-[#cdd6f4] text-center"
+                className="w-14 px-1.5 py-0.5 rounded bg-[#181825] border border-[#313244] text-[10px] font-mono text-[#cdd6f4] text-center"
               />
               <span className="text-[10px] text-[#6c7086]">s</span>
             </div>

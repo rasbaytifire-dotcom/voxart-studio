@@ -301,7 +301,56 @@ export async function authFetch(
     body
   };
 
-  return fetch(input, mergedInit);
+  const isApiCall = url.startsWith('/api/') || url.includes('/api/');
+  const response = await fetch(input, mergedInit);
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  const isTransientGatewayHtml =
+    isApiCall &&
+    (response.status === 502 ||
+      response.status === 503 ||
+      response.status === 504 ||
+      contentType.includes('text/html'));
+
+  if (isTransientGatewayHtml) {
+    await new Promise((r) => setTimeout(r, 1100));
+    return fetch(input, mergedInit);
+  }
+
+  return response;
+}
+
+/**
+ * Safely parses an HTTP Response as JSON without throwing cryptic HTML SyntaxError
+ * ("Unexpected token '<', \"<!doctype \"... is not valid JSON") when a proxy or server
+ * returns an HTML error/fallback page.
+ */
+export async function safeJsonResponse<T = any>(
+  response: Response,
+  fallbackContext = 'du serveur'
+): Promise<T> {
+  const rawText = await response.text();
+  const trimmed = rawText.trim();
+
+  if (!trimmed) {
+    if (!response.ok) {
+      throw new Error(`Réponse vide ${fallbackContext} (HTTP ${response.status}).`);
+    }
+    return {} as T;
+  }
+
+  if (trimmed.startsWith('<') || /^<!doctype/i.test(trimmed)) {
+    throw new Error(
+      `Réponse HTML inattendue ${fallbackContext} (HTTP ${response.status}). Veuillez réessayer dans un instant.`
+    );
+  }
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    throw new Error(
+      `Réponse non valide ${fallbackContext} (HTTP ${response.status}).`
+    );
+  }
 }
 
 /**
@@ -332,7 +381,7 @@ export function useApiAuth() {
     try {
       const res = await authFetch('/api/auth/status');
       if (res.ok) {
-        const data = await res.json();
+        const data = await safeJsonResponse<any>(res, 'du statut API');
         setBackendStatus({
           hasKey: !!data.hasKey,
           hasServerEnvKey: !!data.hasServerEnvKey,

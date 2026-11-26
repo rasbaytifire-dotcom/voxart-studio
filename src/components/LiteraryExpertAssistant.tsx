@@ -19,7 +19,7 @@ import {
   Clock,
   SlidersHorizontal,
 } from 'lucide-react';
-import { authFetch, apiAuthStore } from '../services/apiAuth';
+import { authFetch, apiAuthStore, safeJsonResponse } from '../services/apiAuth';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { SLAM_CADENCE_PRESETS, formatMinutesSeconds } from '../utils/slamMetrics';
 
@@ -158,7 +158,7 @@ export const LiteraryExpertAssistant: React.FC<LiteraryExpertAssistantProps> = (
         effectiveKey
       );
 
-      const data = await res.json();
+      const data = await safeJsonResponse<any>(res, "de l'expert littéraire");
       if (!res.ok) {
         throw new Error(data.error || "Erreur lors de la consultation de l'expert littéraire.");
       }

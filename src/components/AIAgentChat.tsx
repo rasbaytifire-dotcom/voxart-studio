@@ -9,7 +9,7 @@ import {
   Image as ImageIcon, Settings, Volume2, Copy, Check, Square, Mic, Key, ShieldCheck, AlertCircle
 } from 'lucide-react';
 import { copyTextToClipboard } from '../utils/clipboard';
-import { useApiAuth, authFetch, apiAuthStore } from '../services/apiAuth';
+import { useApiAuth, authFetch, apiAuthStore, safeJsonResponse } from '../services/apiAuth';
 
 interface ChatMessage {
   role: 'user' | 'model';
@@ -166,7 +166,7 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
         })
       }, effectiveKey);
 
-      const data = await res.json();
+      const data = await safeJsonResponse<any>(res, "de l'agent IA");
       if (!res.ok) {
         throw new Error(data.error || 'Erreur lors de la communication avec l\'agent IA.');
       }

@@ -7,7 +7,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import JSZip from 'jszip';
-import { authFetch, apiAuthStore } from '../services/apiAuth';
+import { authFetch, apiAuthStore, safeJsonResponse } from '../services/apiAuth';
 import {
   TRADITIONAL_RHYTHM_PRESETS,
   renderCompositionToWav
@@ -713,11 +713,11 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
       }, effectiveKey);
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        const errorData = await safeJsonResponse<any>(response, 'de la transcription').catch((e) => ({ error: e?.message }));
         throw new Error(errorData.error || 'Échec de la transcription');
       }
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'de la transcription');
       const transcriptionText: string = data.transcription || '';
 
       let extractedRaw = '';
@@ -952,7 +952,7 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
         })
       }, effectiveKey);
 
-      const data = await response.json();
+      const data = await safeJsonResponse<any>(response, 'du moteur vocal');
       if (!response.ok || !data.audio || data.fallback) {
         throw new Error(data.error || data.message || 'Erreur lors de la synthèse vocale Gemini');
       }

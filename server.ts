@@ -1589,6 +1589,31 @@ RÈGLES SRT STRICTES :
     res.sendFile(path.resolve(__dirname, "public/sw.js"));
   });
 
+  // Guarantee /api/* routes always return JSON on 404 or server/Multer errors (never Vite HTML fallback)
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Endpoint API introuvable." });
+  });
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    const status =
+      typeof err?.status === "number"
+        ? err.status
+        : typeof err?.statusCode === "number"
+          ? err.statusCode
+          : err?.code === "LIMIT_FILE_SIZE"
+            ? 413
+            : 500;
+    const message =
+      err?.code === "LIMIT_FILE_SIZE"
+        ? "Fichier trop volumineux pour le serveur."
+        : err?.message || "Erreur interne du serveur.";
+    if (req.path.startsWith("/api") || req.headers.accept?.includes("application/json")) {
+      return res.status(status).json({ error: message });
+    }
+    return next(err);
+  });
+
   // Setup Vite middleware with HMR disabled to avoid WebSocket disconnects in iframe/proxy
   const vite = await createViteServer({
     server: {
