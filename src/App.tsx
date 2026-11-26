@@ -83,6 +83,7 @@ import {
   registerLaunchQueueConsumer,
 } from './utils/incomingShareStore';
 import { IncomingDestination, IncomingFileModal } from './components/IncomingFileModal';
+import { DownloadReadyModal } from './components/DownloadReadyModal';
 import { isVoiceGuideEnabled, setVoiceGuideEnabled } from './utils/voiceGuide';
 import { VoiceGuideWrapper } from './components/VoiceGuideWrapper';
 
@@ -6413,6 +6414,9 @@ ${item.text}`;
         onClose={() => setIncomingPayload(null)}
         onSelectDestination={handleRouteIncomingDestination}
       />
+
+      {/* Modale mobile / APK d'export et partage natif (audio WAV/MP3, vidéo MP4, SRT, ZIP) */}
+      <DownloadReadyModal onToast={showToast} />
     </div>
   );
 }

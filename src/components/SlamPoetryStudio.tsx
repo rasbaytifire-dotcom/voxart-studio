@@ -49,9 +49,9 @@ import {
   compressWavForUpload,
   exportAudioBlobAsWav,
   exportAudioDataAsWav,
+  presentReadyDownload,
   readSourceUrlToArrayBuffer,
   triggerSafeDownload,
-  triggerHttpUrlDownload,
 } from '../utils/audioExport';
 import { renderStudioMixWithDucking } from '../utils/audioDuckingEngine';
 import { SlamPoetryEditor } from './SlamPoetryEditor';
@@ -819,7 +819,6 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
       }
       const fileName = `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`;
       formData.append('outputFilename', fileName);
-      formData.append('responseMode', 'json');
       formData.append('width', String(width));
       formData.append('height', String(height));
       formData.append('durationSec', String(totalDur));
@@ -837,38 +836,22 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
         body: formData,
       });
 
-      const contentType = (response.headers.get('content-type') || '').toLowerCase();
       if (!response.ok) {
         const errJson = await safeJsonResponse<any>(response, 'du compilateur vidéo').catch((e) => ({ error: e?.message }));
         throw new Error(errJson.error || 'Échec de la compilation MP4 côté serveur.');
       }
 
-      if (contentType.includes('application/json')) {
-        const compileData = await safeJsonResponse<{ url: string; filename?: string }>(response, 'du compilateur vidéo');
-        if (!compileData?.url) {
-          throw new Error('Lien de téléchargement MP4 manquant dans la réponse serveur.');
-        }
-        if (compiledVideoUrl?.startsWith('blob:')) URL.revokeObjectURL(compiledVideoUrl);
-        setCompiledVideoBlob(null);
-        setCompiledVideoUrl(compileData.url);
-        triggerHttpUrlDownload(compileData.url, compileData.filename || fileName);
-      } else {
-        const directUrl = response.headers.get('X-Download-Url');
-        const mp4Buffer = await response.arrayBuffer();
-        const videoBlob = new Blob([mp4Buffer], { type: 'video/mp4' });
-        if (compiledVideoUrl?.startsWith('blob:')) URL.revokeObjectURL(compiledVideoUrl);
-        const nextUrl = URL.createObjectURL(videoBlob);
-        setCompiledVideoBlob(videoBlob);
-        setCompiledVideoUrl(nextUrl);
+      const directUrl = response.headers.get('X-Download-Url');
+      const mp4Buffer = await response.arrayBuffer();
+      const videoBlob = new Blob([mp4Buffer], { type: 'video/mp4' });
+      if (compiledVideoUrl?.startsWith('blob:')) URL.revokeObjectURL(compiledVideoUrl);
+      const nextUrl = URL.createObjectURL(videoBlob);
+      setCompiledVideoBlob(videoBlob);
+      setCompiledVideoUrl(nextUrl);
 
-        if (directUrl) {
-          triggerHttpUrlDownload(directUrl, fileName);
-        } else {
-          await triggerSafeDownload(videoBlob, fileName);
-        }
-      }
+      await presentReadyDownload(videoBlob, fileName, directUrl);
       setVideoExportProgress(100);
-      addToast(`Vidéo MP4 (${videoFormat}) compatible InShot, CapCut et mobile téléchargée !`, 'success');
+      addToast(`Vidéo MP4 (${videoFormat}) prête à enregistrer sur votre appareil !`, 'success');
     } catch (err: any) {
       console.error('Video compile error:', err);
       addToast(err?.message || 'Erreur lors de la compilation vidéo MP4.', 'error');
@@ -1709,9 +1692,9 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
                   onClick={() => {
                     const fileName = `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`;
                     if (compiledVideoBlob) {
-                      triggerFileDownload(compiledVideoBlob, fileName);
+                      void presentReadyDownload(compiledVideoBlob, fileName);
                     } else if (compiledVideoUrl) {
-                      triggerHttpUrlDownload(compiledVideoUrl, fileName);
+                      void presentReadyDownload(new Blob([], { type: 'video/mp4' }), fileName, compiledVideoUrl);
                     }
                   }}
                   className="text-[#f59e0b] font-semibold hover:underline cursor-pointer"

@@ -2,7 +2,7 @@
  * VoxArt Studio - Service Worker for PWA Offline, Live Updates & Web Share Target
  */
 
-const CACHE_NAME = 'voxart-cache-v6-ridialart';
+const CACHE_NAME = 'voxart-cache-v7-ridialart';
 const SHARE_DB_NAME = 'voxart-share-db';
 const SHARE_DB_VERSION = 1;
 const SHARE_STORE_NAME = 'incoming_shares';

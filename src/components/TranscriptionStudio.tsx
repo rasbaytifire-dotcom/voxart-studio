@@ -15,9 +15,9 @@ import {
 import { cleanTextForSpeech } from '../utils/textCleaner';
 import {
   audioBufferToWavBlob,
+  presentReadyDownload,
   readSourceUrlToArrayBuffer,
   triggerSafeDownload,
-  triggerHttpUrlDownload,
 } from '../utils/audioExport';
 import { CustomVoiceProfile } from '../types/voiceProfile';
 import {
@@ -1471,13 +1471,9 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
       const baseName = file.name.replace(/\.[^/.]+$/, '');
       const downloadName = `${baseName}_voxart_subtitled.mp4`;
       const serverDownloadUrl = response.headers.get('X-Download-Url');
-      if (serverDownloadUrl) {
-        triggerHttpUrlDownload(serverDownloadUrl, downloadName);
-      } else {
-        await triggerSafeDownload(blob, downloadName);
-      }
+      await presentReadyDownload(blob, downloadName, serverDownloadUrl);
 
-      addToast('Vidéo MP4 (H.264/AAC) compatible InShot, CapCut et mobile téléchargée !', 'success');
+      addToast('Vidéo MP4 (H.264/AAC) prête à enregistrer sur votre appareil !', 'success');
     } catch (err: any) {
       console.error(err);
       addToast(err?.message || "Erreur lors de l'export de la vidéo", 'error');

@@ -115,6 +115,42 @@ function inferMimeFromFilename(filename: string, fallbackType?: string): string 
     : 'application/octet-stream';
 }
 
+export const VOXART_DOWNLOAD_READY_EVENT = 'voxart:download-ready';
+
+export interface DownloadReadyPayload {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  blob: Blob;
+  httpUrl?: string | null;
+}
+
+export function isMobileOrStandaloneEnvironment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const isStandalone =
+    window.matchMedia?.('(display-mode: standalone)')?.matches ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+    document.referrer?.startsWith('android-app://');
+  const isMobileUa =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|wv|WebView/i.test(
+      navigator.userAgent || ''
+    );
+  return Boolean(isStandalone || isMobileUa);
+}
+
+export function emitDownloadReady(payload: Omit<DownloadReadyPayload, 'id'>): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<DownloadReadyPayload>(VOXART_DOWNLOAD_READY_EVENT, {
+      detail: {
+        ...payload,
+        id: `dl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      },
+    })
+  );
+}
+
 export function triggerHttpUrlDownload(url: string, filename: string): void {
   const a = document.createElement('a');
   a.href = url;
@@ -126,8 +162,52 @@ export function triggerHttpUrlDownload(url: string, filename: string): void {
 }
 
 /**
- * Relays client Blob through /api/prepare-download so Android DownloadManager / mobile WebViews
- * receive real HTTP Content-Type + Content-Disposition headers and never save files as <uuid>.bin.
+ * Presents a compiled media Blob (like a freshly compiled MP4) to the user:
+ * - On mobile / Android APK / standalone PWA, opens DownloadReadyModal with genuine
+ *   user-gesture Share Sheet (Fichiers / InShot / CapCut) + direct tap anchors.
+ * - On desktop, immediately triggers the download via HTTP relay or blob fallback.
+ */
+export async function presentReadyDownload(
+  blob: Blob,
+  filename: string,
+  httpUrl?: string | null
+): Promise<void> {
+  const safeName =
+    (filename || 'VoxArt_Export.mp4').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() ||
+    'VoxArt_Export.mp4';
+  const mime = inferMimeFromFilename(safeName, blob.type);
+  const typedBlob = blob.type === mime ? blob : new Blob([blob], { type: mime });
+
+  if (isMobileOrStandaloneEnvironment()) {
+    emitDownloadReady({
+      filename: safeName,
+      mimeType: mime,
+      sizeBytes: typedBlob.size,
+      blob: typedBlob,
+      httpUrl: httpUrl || null,
+    });
+    return;
+  }
+
+  if (httpUrl) {
+    triggerHttpUrlDownload(httpUrl, safeName);
+    return;
+  }
+
+  const url = URL.createObjectURL(typedBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = safeName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+}
+
+/**
+ * Relays client Blob through /api/prepare-download so browsers receive real HTTP
+ * Content-Type + Content-Disposition headers, and on Mobile/Android APK opens
+ * DownloadReadyModal so synchronous user-tap Share / Save always works cleanly.
  */
 export async function triggerSafeDownload(
   blob: Blob,
@@ -135,12 +215,13 @@ export async function triggerSafeDownload(
   options?: { convertToMp3?: boolean }
 ): Promise<void> {
   const safeName = (filename || 'VoxArt_Export.wav').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'VoxArt_Export.wav';
-  const mime = inferMimeFromFilename(safeName, blob.type);
-  const typedBlob = blob.type === mime ? blob : new Blob([blob], { type: mime });
+  let mime = inferMimeFromFilename(safeName, blob.type);
+  let finalBlob = blob.type === mime ? blob : new Blob([blob], { type: mime });
+  let relayUrl: string | null = null;
 
   try {
     const formData = new FormData();
-    formData.append('file', typedBlob, safeName);
+    formData.append('file', finalBlob, safeName);
     formData.append('filename', safeName);
     formData.append('mimeType', mime);
     if (options?.convertToMp3) {
@@ -157,8 +238,18 @@ export async function triggerSafeDownload(
       if (raw && !raw.trim().startsWith('<')) {
         const parsed = JSON.parse(raw);
         if (parsed?.url) {
-          triggerHttpUrlDownload(parsed.url, safeName);
-          return;
+          relayUrl = parsed.url;
+          // If server transcoded WAV -> real MP3 and we're on mobile/APK, hydrate the MP3 blob
+          // so Android native Share Sheet shares genuine MP3 bytes.
+          if (options?.convertToMp3 && isMobileOrStandaloneEnvironment()) {
+            try {
+              const mp3Data = await readSourceUrlToArrayBuffer(parsed.url);
+              mime = 'audio/mpeg';
+              finalBlob = new Blob([mp3Data.buffer], { type: 'audio/mpeg' });
+            } catch {
+              // Keep existing blob fallback
+            }
+          }
         }
       }
     }
@@ -166,7 +257,23 @@ export async function triggerSafeDownload(
     console.warn('Relay download fallback to local blob URL:', err);
   }
 
-  const url = URL.createObjectURL(typedBlob);
+  if (isMobileOrStandaloneEnvironment()) {
+    emitDownloadReady({
+      filename: safeName,
+      mimeType: mime,
+      sizeBytes: finalBlob.size,
+      blob: finalBlob,
+      httpUrl: relayUrl,
+    });
+    return;
+  }
+
+  if (relayUrl) {
+    triggerHttpUrlDownload(relayUrl, safeName);
+    return;
+  }
+
+  const url = URL.createObjectURL(finalBlob);
   const a = document.createElement('a');
   a.href = url;
   a.download = safeName;
