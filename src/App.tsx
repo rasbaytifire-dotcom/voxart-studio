@@ -47,7 +47,13 @@ import { RhythmComposition } from './types/rhythm';
 import studioLogo from './assets/images/voxart_logo_1791875178885.jpg';
 import { db, ensureAuth } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { audioBufferToWavBlob, exportAudioDataAsWav } from './utils/audioExport';
+import {
+  audioBufferToWavBlob,
+  exportAudioDataAsWav,
+  readSourceUrlToArrayBuffer,
+  triggerSafeDownload,
+  triggerUrlSourceDownload,
+} from './utils/audioExport';
 import { createBroadcastEQChain } from './utils/audioDuckingEngine';
 import { saveAudioBlob, saveProjectOffline, getAllProjectsOffline } from './utils/indexedDBStorage';
 import type { BackingTrackInfo } from './components/BackgroundMusicStudio';
@@ -544,14 +550,7 @@ export default function App() {
 
       const jsonStr = JSON.stringify(exportPayload, null, 2);
       const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `voxart_prereglage_${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      void triggerSafeDownload(blob, `voxart_prereglage_${new Date().toISOString().slice(0, 10)}.json`);
       showToast("Préréglage de voix et d'effets exporté en JSON !", "success");
     } catch (e) {
       console.warn("Error exporting preset JSON:", e);
@@ -1965,8 +1964,7 @@ export default function App() {
     let decodedBacking: AudioBuffer | null = null;
     if (backingTrackUrl) {
       try {
-        const backingRes = await fetch(backingTrackUrl);
-        const backingArrayBuf = await backingRes.arrayBuffer();
+        const { buffer: backingArrayBuf } = await readSourceUrlToArrayBuffer(backingTrackUrl);
         decodedBacking = await ctx.decodeAudioData(backingArrayBuf);
       } catch (e) {
         console.warn("Could not load backing track for mix:", e);
@@ -2239,16 +2237,10 @@ export default function App() {
   const handleDownloadAudioFile = async (format: 'mp3' | 'wav') => {
     try {
       const blob = await getTrimmedAudioBlob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
       const fileName = (saveTitle.trim() || 'VoxArt_Audio').replace(/[^a-z0-9_-]/gi, '_');
-      a.download = `${fileName}.${format === 'mp3' ? 'mp3' : 'wav'}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      showToast(`Audio téléchargé avec succès en .${format} !`, "success");
+      const targetName = `${fileName}.${format === 'mp3' ? 'mp3' : 'wav'}`;
+      await triggerSafeDownload(blob, targetName, { convertToMp3: format === 'mp3' });
+      showToast(`Audio téléchargé avec succès en .${format.toUpperCase()} !`, "success");
 
       // Save blob into offline IndexedDB storage in background
       saveAudioBlob(`audio_${Date.now()}_${fileName}`, blob, { title: fileName, format }).catch(() => {});
@@ -2283,11 +2275,9 @@ export default function App() {
           );
           folder.file(`02_Mix_Master_Ducked_${fileName}.wav`, mixBlob);
 
-          const backingRes = await fetch(activeBackingTrack.url);
-          if (backingRes.ok) {
-            const backingBlob = await backingRes.blob();
-            folder.file(`03_Fond_Sonore_Isole_${fileName}.wav`, backingBlob);
-          }
+          const { buffer: backingBuf, mimeType: backingMime } = await readSourceUrlToArrayBuffer(activeBackingTrack.url);
+          const backingBlob = new Blob([backingBuf], { type: backingMime || 'audio/wav' });
+          folder.file(`03_Fond_Sonore_Isole_${fileName}.wav`, backingBlob);
         } catch (e) {
           console.warn("Could not generate mix for zip pack:", e);
         }
@@ -2301,14 +2291,7 @@ export default function App() {
       }
 
       const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${fileName}_Multipiste_Studio.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await triggerSafeDownload(zipBlob, `${fileName}_Multipiste_Studio.zip`);
       showToast("📦 Pack Studio Multipiste ZIP téléchargé avec succès !", "success");
     } catch (e) {
       console.error("Studio Pack ZIP Export error:", e);
@@ -2458,12 +2441,7 @@ export default function App() {
       }
 
       const content = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(content);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_archive.zip`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      await triggerSafeDownload(content, `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_archive.zip`);
     } catch (e) {
       console.error("ZIP Export Error:", e);
       showToast("Erreur lors de la création de l'archive ZIP.", "error");
@@ -2479,13 +2457,8 @@ export default function App() {
       exportedAt: new Date().toISOString()
     };
     const jsonStr = JSON.stringify(exportObj, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_share.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+    void triggerSafeDownload(blob, `${projectName.replace(/[^a-z0-9_-]/gi, '_')}_voxart_share.json`);
   };
 
   const handleImportProjectJson = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2597,9 +2570,7 @@ export default function App() {
 
   const shareAudioItem = async (base64Data: string, filename: string) => {
     try {
-      const res = await fetch(base64Data);
-      const sourceBlob = await res.blob();
-      const arrayBuffer = await sourceBlob.arrayBuffer();
+      const { buffer: arrayBuffer } = await readSourceUrlToArrayBuffer(base64Data);
 
       let wavBlob: Blob;
       const headerBytes = new Uint8Array(arrayBuffer.slice(0, 12));
@@ -4942,14 +4913,18 @@ ${item.text}`;
                                   >
                                     ▶️
                                   </button>
-                                  <a
-                                    href={item.audioUrl}
-                                    download={`${item.name}.mp3`}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (item.audioUrl) {
+                                        void triggerUrlSourceDownload(item.audioUrl, `${item.name}.mp3`, { convertToMp3: true });
+                                      }
+                                    }}
                                     className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] rounded text-[11px]"
                                     title="Télécharger MP3"
                                   >
                                     ⬇️
-                                  </a>
+                                  </button>
                                 </>
                               )}
 
@@ -5095,19 +5070,14 @@ ${item.text}`;
             onExportProjectJson={exportProjectAsJson}
             onExportProjectZip={exportProjectAsZip}
             onExportAllDatabaseJson={() => {
-              const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(library, null, 2));
-              const downloadAnchor = document.createElement('a');
-              downloadAnchor.setAttribute("href", dataStr);
-              downloadAnchor.setAttribute("download", `voxart_database_backup_${new Date().toISOString().slice(0, 10)}.json`);
-              document.body.appendChild(downloadAnchor);
-              downloadAnchor.click();
-              downloadAnchor.remove();
+              const backupBlob = new Blob([JSON.stringify(library, null, 2)], { type: 'application/json;charset=utf-8' });
+              void triggerSafeDownload(backupBlob, `voxart_database_backup_${new Date().toISOString().slice(0, 10)}.json`);
               showToast("Base de données téléchargée avec succès sur votre appareil !", "success");
             }}
             onImportProjectJson={handleImportProjectJson}
             onPlayAudio={async (dataUrl) => {
-              const res = await fetch(dataUrl);
-              const blob = await res.blob();
+              const { buffer, mimeType } = await readSourceUrlToArrayBuffer(dataUrl);
+              const blob = new Blob([buffer], { type: mimeType || 'audio/wav' });
               const url = URL.createObjectURL(blob);
               setCurrentAudioBlob(blob);
               setCurrentAudioUrl(url);
@@ -5187,13 +5157,8 @@ ${item.text}`;
             }}
             onDownloadTextSrt={(content, filename) => {
               const srt = generateSRT(content);
-              const blob = new Blob([srt], { type: 'text/srt;charset=utf-8' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `${filename}.srt`;
-              a.click();
-              setTimeout(() => URL.revokeObjectURL(url), 5000);
+              const blob = new Blob([srt], { type: 'application/x-subrip;charset=utf-8' });
+              void triggerSafeDownload(blob, `${filename}.srt`);
             }}
             onUploadVideo={handleVideoUpload}
             onWatchVideo={(url, title) => setActiveVideoModal({ url, title })}
@@ -5540,8 +5505,8 @@ ${item.text}`;
                                 </button>
                                 <button
                                   onClick={async () => {
-                                    const res = await fetch(item.data);
-                                    const blob = await res.blob();
+                                    const { buffer, mimeType } = await readSourceUrlToArrayBuffer(item.data);
+                                    const blob = new Blob([buffer], { type: mimeType || 'audio/wav' });
                                     const url = URL.createObjectURL(blob);
                                     setCurrentAudioBlob(blob);
                                     setCurrentAudioUrl(url);
@@ -5701,11 +5666,7 @@ ${item.text}`;
                                     <button
                                       onClick={() => {
                                         const blob = new Blob([item.content], { type: 'text/plain;charset=utf-8' });
-                                        const url = URL.createObjectURL(blob);
-                                        const a = document.createElement('a');
-                                        a.href = url;
-                                        a.download = `${item.name}.txt`;
-                                        a.click();
+                                        void triggerSafeDownload(blob, `${item.name}.txt`);
                                       }}
                                       className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] rounded text-[11px]"
                                     >
@@ -5714,12 +5675,8 @@ ${item.text}`;
                                     <button
                                       onClick={() => {
                                         const srt = generateSRT(item.content);
-                                        const blob = new Blob([srt], { type: 'text/srt;charset=utf-8' });
-                                        const url = URL.createObjectURL(blob);
-                                        const a = document.createElement('a');
-                                        a.href = url;
-                                        a.download = `${item.name}.srt`;
-                                        a.click();
+                                        const blob = new Blob([srt], { type: 'application/x-subrip;charset=utf-8' });
+                                        void triggerSafeDownload(blob, `${item.name}.srt`);
                                       }}
                                       className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#fab387] rounded text-[11px]"
                                     >
@@ -5805,14 +5762,14 @@ ${item.text}`;
                                 >
                                   ▶️ Regarder
                                 </button>
-                                <a
-                                  href={vid.data}
-                                  download={`${vid.name}.mp4`}
+                                <button
+                                  type="button"
+                                  onClick={() => void triggerUrlSourceDownload(vid.data, `${vid.name}.mp4`)}
                                   className="px-2 py-1 bg-[#313244] hover:bg-[#45475a] text-[#a6e3a1] rounded text-[11px]"
                                   title="Télécharger"
                                 >
                                   ⬇️
-                                </a>
+                                </button>
                                 <button
                                   onClick={() => {
                                     const updated = { ...library };
@@ -6410,14 +6367,14 @@ ${item.text}`;
               />
             </div>
             <div className="mt-4 w-full flex gap-2">
-              <a
-                href={activeVideoModal.url}
-                download={`${activeVideoModal.title}.mp4`}
+              <button
+                type="button"
+                onClick={() => void triggerUrlSourceDownload(activeVideoModal.url, `${activeVideoModal.title}.mp4`)}
                 className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-xs font-bold text-white text-center hover:opacity-90 shadow-md transition-all flex items-center justify-center gap-1.5"
               >
                 <Download className="w-4 h-4" />
                 <span>Télécharger (.mp4)</span>
-              </a>
+              </button>
               <button
                 onClick={() => setActiveVideoModal(null)}
                 className="py-2.5 px-4 rounded-xl bg-[#313244] hover:bg-[#45475a] text-xs font-bold text-[#cdd6f4]"

@@ -44,7 +44,15 @@ import {
   playContinuousSoundscape,
   renderCompositionToWav,
 } from '../utils/africanAudioEngine';
-import { audioBufferToWavBlob, exportAudioDataAsWav } from '../utils/audioExport';
+import {
+  audioBufferToWavBlob,
+  compressWavForUpload,
+  exportAudioBlobAsWav,
+  exportAudioDataAsWav,
+  readSourceUrlToArrayBuffer,
+  triggerSafeDownload,
+  triggerHttpUrlDownload,
+} from '../utils/audioExport';
 import { renderStudioMixWithDucking } from '../utils/audioDuckingEngine';
 import { SlamPoetryEditor } from './SlamPoetryEditor';
 import { LiteraryExpertAssistant } from './LiteraryExpertAssistant';
@@ -89,14 +97,7 @@ function sanitizeFileSlug(raw: string, fallback = 'VoxArt_Slam'): string {
 }
 
 function triggerFileDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  void triggerSafeDownload(blob, filename);
 }
 
 function generatePoeticArtworkDataUrl(
@@ -567,9 +568,7 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
       const voiceArrayBuffer = await voiceBlob.arrayBuffer();
       const voiceBuffer = await ctx.decodeAudioData(voiceArrayBuffer.slice(0));
 
-      const bgResponse = await fetch(bgMusicUrl);
-      if (!bgResponse.ok) throw new Error('Impossible de lire la piste musicale de fond.');
-      const bgArrayBuffer = await bgResponse.arrayBuffer();
+      const { buffer: bgArrayBuffer } = await readSourceUrlToArrayBuffer(bgMusicUrl);
       const backingBuffer = await ctx.decodeAudioData(bgArrayBuffer.slice(0));
 
       const mixedBuffer = await renderStudioMixWithDucking(voiceBuffer, backingBuffer, {
@@ -611,14 +610,19 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
     }
   };
 
-  // Download generated voice WAV directly
+  // Download generated voice WAV directly from in-memory Blob (never fetch blob: URL)
   const handleDownloadVoiceWav = async () => {
-    if (!voiceAudioUrl) {
+    if (!voiceBlob && !voiceAudioUrl) {
       addToast('Générez d’abord la voix off narrative.', 'info');
       return;
     }
     try {
-      await exportAudioDataAsWav(voiceAudioUrl, `${sanitizeFileSlug(poemTitle)}_Voix`);
+      const slug = `${sanitizeFileSlug(poemTitle)}_Voix`;
+      if (voiceBlob) {
+        await exportAudioBlobAsWav(voiceBlob, slug);
+      } else if (voiceAudioUrl) {
+        await exportAudioDataAsWav(voiceAudioUrl, slug);
+      }
       addToast('Voix générée téléchargée en .WAV !', 'success');
     } catch (err: any) {
       addToast(err?.message || 'Erreur lors du téléchargement WAV.', 'error');
@@ -805,12 +809,17 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
       );
       setVideoExportProgress(38);
 
+      const uploadAudioBlob = await compressWavForUpload(audioBlobForVideo, 22050);
+
       const formData = new FormData();
-      const audioExt = audioBlobForVideo.type.includes('mp3') || audioBlobForVideo.type.includes('mpeg') ? 'mp3' : 'wav';
-      formData.append('audio', audioBlobForVideo, `slam-audio.${audioExt}`);
+      const audioExt = uploadAudioBlob.type.includes('mp3') || uploadAudioBlob.type.includes('mpeg') ? 'mp3' : 'wav';
+      formData.append('audio', uploadAudioBlob, `slam-audio.${audioExt}`);
       if (backdropBlob) {
         formData.append('image', backdropBlob, 'slam-backdrop.jpg');
       }
+      const fileName = `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`;
+      formData.append('outputFilename', fileName);
+      formData.append('responseMode', 'json');
       formData.append('width', String(width));
       formData.append('height', String(height));
       formData.append('durationSec', String(totalDur));
@@ -828,20 +837,36 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
         body: formData,
       });
 
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
       if (!response.ok) {
         const errJson = await safeJsonResponse<any>(response, 'du compilateur vidéo').catch((e) => ({ error: e?.message }));
         throw new Error(errJson.error || 'Échec de la compilation MP4 côté serveur.');
       }
 
-      const mp4Buffer = await response.arrayBuffer();
-      const videoBlob = new Blob([mp4Buffer], { type: 'video/mp4' });
-      if (compiledVideoUrl) URL.revokeObjectURL(compiledVideoUrl);
-      const nextUrl = URL.createObjectURL(videoBlob);
-      setCompiledVideoBlob(videoBlob);
-      setCompiledVideoUrl(nextUrl);
+      if (contentType.includes('application/json')) {
+        const compileData = await safeJsonResponse<{ url: string; filename?: string }>(response, 'du compilateur vidéo');
+        if (!compileData?.url) {
+          throw new Error('Lien de téléchargement MP4 manquant dans la réponse serveur.');
+        }
+        if (compiledVideoUrl?.startsWith('blob:')) URL.revokeObjectURL(compiledVideoUrl);
+        setCompiledVideoBlob(null);
+        setCompiledVideoUrl(compileData.url);
+        triggerHttpUrlDownload(compileData.url, compileData.filename || fileName);
+      } else {
+        const directUrl = response.headers.get('X-Download-Url');
+        const mp4Buffer = await response.arrayBuffer();
+        const videoBlob = new Blob([mp4Buffer], { type: 'video/mp4' });
+        if (compiledVideoUrl?.startsWith('blob:')) URL.revokeObjectURL(compiledVideoUrl);
+        const nextUrl = URL.createObjectURL(videoBlob);
+        setCompiledVideoBlob(videoBlob);
+        setCompiledVideoUrl(nextUrl);
 
-      const fileName = `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`;
-      triggerFileDownload(videoBlob, fileName);
+        if (directUrl) {
+          triggerHttpUrlDownload(directUrl, fileName);
+        } else {
+          await triggerSafeDownload(videoBlob, fileName);
+        }
+      }
       setVideoExportProgress(100);
       addToast(`Vidéo MP4 (${videoFormat}) compatible InShot, CapCut et mobile téléchargée !`, 'success');
     } catch (err: any) {
@@ -1678,15 +1703,17 @@ export const SlamPoetryStudio: React.FC<SlamPoetryStudioProps> = ({
             </div>
             <p className="text-[10px] text-[#a6adc8] flex flex-wrap items-center justify-between gap-2">
               <span>Format MP4 universel (H.264 + AAC) compatible InShot, CapCut, Android & iPhone.</span>
-              {compiledVideoBlob && (
+              {(compiledVideoBlob || compiledVideoUrl) && (
                 <button
                   type="button"
-                  onClick={() =>
-                    triggerFileDownload(
-                      compiledVideoBlob,
-                      `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`
-                    )
-                  }
+                  onClick={() => {
+                    const fileName = `${sanitizeFileSlug(poemTitle)}_${videoFormat.replace(':', 'x')}.mp4`;
+                    if (compiledVideoBlob) {
+                      triggerFileDownload(compiledVideoBlob, fileName);
+                    } else if (compiledVideoUrl) {
+                      triggerHttpUrlDownload(compiledVideoUrl, fileName);
+                    }
+                  }}
                   className="text-[#f59e0b] font-semibold hover:underline cursor-pointer"
                 >
                   Re-télécharger le MP4

@@ -26,7 +26,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { exportAudioDataAsWav } from '../utils/audioExport';
+import { exportAudioDataAsWav, triggerSafeDownload, triggerUrlSourceDownload } from '../utils/audioExport';
 
 export interface LibraryAudioItem {
   id: number;
@@ -1091,12 +1091,7 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                       const blob = new Blob([activeText.content], {
                         type: 'text/plain;charset=utf-8',
                       });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `${activeText.name}.txt`;
-                      a.click();
-                      setTimeout(() => URL.revokeObjectURL(url), 5000);
+                      void triggerSafeDownload(blob, `${activeText.name}.txt`);
                       setSelectedTextIdx(null);
                     }}
                     className="min-h-[48px] px-3 rounded-xl bg-[#181825] border border-[#313244] flex items-center justify-center gap-2 text-xs font-semibold text-[#89b4fa] cursor-pointer"
@@ -1191,15 +1186,19 @@ export const LibraryHubView: React.FC<LibraryHubViewProps> = ({
                   </button>
                 )}
 
-                <a
-                  href={activeVideo.data}
-                  download={`${activeVideo.name}.mp4`}
-                  onClick={() => setSelectedVideoIdx(null)}
-                  className="w-full min-h-[48px] px-4 rounded-xl bg-[#181825] border border-[#313244] flex items-center gap-3 text-sm font-medium text-[#a6e3a1]"
+                <button
+                  type="button"
+                  onClick={() => {
+                    const vidUrl = activeVideo.data;
+                    const vidName = `${activeVideo.name || 'video'}.mp4`;
+                    setSelectedVideoIdx(null);
+                    void triggerUrlSourceDownload(vidUrl, vidName);
+                  }}
+                  className="w-full min-h-[48px] px-4 rounded-xl bg-[#181825] border border-[#313244] flex items-center gap-3 text-sm font-medium text-[#a6e3a1] cursor-pointer"
                 >
                   <Download className="w-4 h-4" />
                   <span>Télécharger (.mp4)</span>
-                </a>
+                </button>
 
                 <button
                   type="button"

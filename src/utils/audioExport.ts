@@ -99,41 +99,210 @@ function hasRiffWaveHeader(bytes: Uint8Array): boolean {
   );
 }
 
-function triggerBlobDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
+function inferMimeFromFilename(filename: string, fallbackType?: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.srt')) return 'application/x-subrip; charset=utf-8';
+  if (lower.endsWith('.vtt')) return 'text/vtt; charset=utf-8';
+  if (lower.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (lower.endsWith('.zip')) return 'application/zip';
+  if (lower.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (lower.endsWith('.png')) return 'image/png';
+  return fallbackType && fallbackType !== 'application/octet-stream'
+    ? fallbackType
+    : 'application/octet-stream';
+}
+
+export function triggerHttpUrlDownload(url: string, filename: string): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 /**
- * Fetches an audio data URL / URL, converts it to a true 16-bit PCM WAV Blob
- * if it is not already a RIFF/WAVE file, and downloads it as `<name>.wav`.
+ * Relays client Blob through /api/prepare-download so Android DownloadManager / mobile WebViews
+ * receive real HTTP Content-Type + Content-Disposition headers and never save files as <uuid>.bin.
  */
-export async function exportAudioDataAsWav(sourceUrl: string, rawName: string): Promise<void> {
-  const downloadName = buildCleanWavFilename(rawName);
-  const response = await fetch(sourceUrl);
-  if (!response.ok) {
-    throw new Error('Impossible de lire le fichier audio source.');
+export async function triggerSafeDownload(
+  blob: Blob,
+  filename: string,
+  options?: { convertToMp3?: boolean }
+): Promise<void> {
+  const safeName = (filename || 'VoxArt_Export.wav').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'VoxArt_Export.wav';
+  const mime = inferMimeFromFilename(safeName, blob.type);
+  const typedBlob = blob.type === mime ? blob : new Blob([blob], { type: mime });
+
+  try {
+    const formData = new FormData();
+    formData.append('file', typedBlob, safeName);
+    formData.append('filename', safeName);
+    formData.append('mimeType', mime);
+    if (options?.convertToMp3) {
+      formData.append('convertToMp3', 'true');
+    }
+
+    const res = await fetch('/api/prepare-download', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (res.ok) {
+      const raw = await res.text();
+      if (raw && !raw.trim().startsWith('<')) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.url) {
+          triggerHttpUrlDownload(parsed.url, safeName);
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Relay download fallback to local blob URL:', err);
   }
 
-  const sourceBlob = await response.blob();
+  const url = URL.createObjectURL(typedBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = safeName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+}
+
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  void triggerSafeDownload(blob, filename);
+}
+
+function decodeDataUrlToBytes(dataUrl: string): { buffer: ArrayBuffer; mimeType: string } {
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx === -1) {
+    throw new Error('Format de données audio invalide.');
+  }
+  const meta = dataUrl.slice(5, commaIdx);
+  const payload = dataUrl.slice(commaIdx + 1);
+  const mimeType = meta.split(';')[0] || 'application/octet-stream';
+  const isBase64 = /;base64/i.test(meta);
+
+  if (isBase64) {
+    const cleanB64 = payload.replace(/\s+/g, '');
+    const binary = atob(cleanB64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return { buffer: bytes.buffer, mimeType };
+  }
+
+  const decodedText = decodeURIComponent(payload);
+  const encoded = new TextEncoder().encode(decodedText);
+  return { buffer: encoded.buffer, mimeType };
+}
+
+/**
+ * Reads any data:, blob:, or HTTP(S) source URL into an ArrayBuffer without failing on
+ * Service Worker / WebView fetch restrictions for data: and blob: URLs.
+ */
+export async function readSourceUrlToArrayBuffer(
+  sourceUrl: string
+): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
+  if (!sourceUrl) {
+    throw new Error('Source multimédia introuvable.');
+  }
+
+  if (sourceUrl.startsWith('data:')) {
+    return decodeDataUrlToBytes(sourceUrl);
+  }
+
+  try {
+    const response = await fetch(sourceUrl);
+    if (!response.ok) {
+      throw new Error(`Impossible de lire la ressource (HTTP ${response.status}).`);
+    }
+    const blob = await response.blob();
+    return {
+      buffer: await blob.arrayBuffer(),
+      mimeType: blob.type || response.headers.get('content-type') || 'application/octet-stream',
+    };
+  } catch (err) {
+    if (sourceUrl.startsWith('blob:') || sourceUrl.startsWith('/')) {
+      return await new Promise<{ buffer: ArrayBuffer; mimeType: string }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', sourceUrl, true);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = () => {
+          if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
+            const buf = xhr.response as ArrayBuffer;
+            if (buf && buf.byteLength > 0) {
+              resolve({
+                buffer: buf,
+                mimeType: xhr.getResponseHeader('content-type') || 'application/octet-stream',
+              });
+              return;
+            }
+          }
+          reject(new Error('Ressource locale inaccessible ou expirée. Veuillez la régénérer.'));
+        };
+        xhr.onerror = () => {
+          reject(
+            new Error(
+              err instanceof Error && err.message !== 'Failed to fetch'
+                ? err.message
+                : 'Impossible de lire la ressource audio/vidéo locale. Régénérez-la puis réessayez.'
+            )
+          );
+        };
+        xhr.send();
+      });
+    }
+    throw new Error(
+      err instanceof Error && !/failed to fetch/i.test(err.message)
+        ? err.message
+        : 'Erreur réseau lors de la lecture du fichier.'
+    );
+  }
+}
+
+/**
+ * Downloads any blob:, data:, or URL resource via the HTTP relay so mobile browsers/WebViews
+ * receive proper Content-Type and Content-Disposition filename headers instead of <uuid>.bin.
+ */
+export async function triggerUrlSourceDownload(
+  sourceUrl: string,
+  filename: string,
+  options?: { convertToMp3?: boolean }
+): Promise<void> {
+  const { buffer, mimeType } = await readSourceUrlToArrayBuffer(sourceUrl);
+  const blob = new Blob([buffer], { type: mimeType });
+  await triggerSafeDownload(blob, filename, options);
+}
+
+/**
+ * Converts a local Blob to a clean 16-bit PCM WAV file (if not already RIFF/WAVE)
+ * and downloads it directly without doing any fetch(blob:...) round-trip.
+ */
+export async function exportAudioBlobAsWav(sourceBlob: Blob, rawName: string): Promise<void> {
+  const downloadName = buildCleanWavFilename(rawName);
   const arrayBuffer = await sourceBlob.arrayBuffer();
   const headerBytes = new Uint8Array(arrayBuffer.slice(0, 12));
 
   if (hasRiffWaveHeader(headerBytes)) {
     const wavBlob = new Blob([arrayBuffer], { type: 'audio/wav' });
-    triggerBlobDownload(wavBlob, downloadName);
+    await triggerSafeDownload(wavBlob, downloadName);
     return;
   }
 
-  const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioCtx) {
-    triggerBlobDownload(new Blob([arrayBuffer], { type: 'audio/wav' }), downloadName);
+    await triggerSafeDownload(new Blob([arrayBuffer], { type: 'audio/wav' }), downloadName);
     return;
   }
 
@@ -141,9 +310,55 @@ export async function exportAudioDataAsWav(sourceUrl: string, rawName: string): 
   try {
     const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
     const wavBlob = audioBufferToWavBlob(decodedBuffer);
-    triggerBlobDownload(wavBlob, downloadName);
+    await triggerSafeDownload(wavBlob, downloadName);
   } finally {
     audioCtx.close().catch(() => {});
   }
+}
+
+/**
+ * Downsamples oversized WAV blobs to mono 22.05 kHz PCM WAV before server upload
+ * so mobile 4G video compilation stays fast and below Cloud Run size limits.
+ */
+export async function compressWavForUpload(
+  sourceBlob: Blob,
+  targetSampleRate = 22050,
+  thresholdBytes = 2.5 * 1024 * 1024
+): Promise<Blob> {
+  if (sourceBlob.size <= thresholdBytes) {
+    return sourceBlob;
+  }
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) return sourceBlob;
+
+  const ctx = new AudioCtx();
+  try {
+    const ab = await sourceBlob.arrayBuffer();
+    const decoded = await ctx.decodeAudioData(ab.slice(0));
+    const outFrames = Math.max(1, Math.ceil(decoded.duration * targetSampleRate));
+    const offline = new OfflineAudioContext(1, outFrames, targetSampleRate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start(0);
+    const rendered = await offline.startRendering();
+    const compact = audioBufferToWavBlob(rendered);
+    return compact.size < sourceBlob.size ? compact : sourceBlob;
+  } catch {
+    return sourceBlob;
+  } finally {
+    ctx.close().catch(() => {});
+  }
+}
+
+/**
+ * Fetches an audio data URL / URL, converts it to a true 16-bit PCM WAV Blob
+ * if it is not already a RIFF/WAVE file, and downloads it as `<name>.wav`.
+ */
+export async function exportAudioDataAsWav(sourceUrl: string, rawName: string): Promise<void> {
+  const { buffer, mimeType } = await readSourceUrlToArrayBuffer(sourceUrl);
+  await exportAudioBlobAsWav(new Blob([buffer], { type: mimeType }), rawName);
 }
 

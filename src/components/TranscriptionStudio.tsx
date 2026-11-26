@@ -13,7 +13,12 @@ import {
   renderCompositionToWav
 } from '../utils/africanAudioEngine';
 import { cleanTextForSpeech } from '../utils/textCleaner';
-import { audioBufferToWavBlob } from '../utils/audioExport';
+import {
+  audioBufferToWavBlob,
+  readSourceUrlToArrayBuffer,
+  triggerSafeDownload,
+  triggerHttpUrlDownload,
+} from '../utils/audioExport';
 import { CustomVoiceProfile } from '../types/voiceProfile';
 import {
   resolveVoicePayloadForTTS,
@@ -482,9 +487,9 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
   // Load a video from Project library dataUrl/URL
   const handleLoadProjectVideo = async (vidItem: { id: number; name: string; data: string }) => {
     try {
-      const resp = await fetch(vidItem.data);
-      const blob = await resp.blob();
-      const mime = blob.type || 'video/mp4';
+      const { buffer, mimeType } = await readSourceUrlToArrayBuffer(vidItem.data);
+      const mime = mimeType || 'video/mp4';
+      const blob = new Blob([buffer], { type: mime });
       const ext = mime.includes('webm') ? '.webm' : mime.includes('quicktime') ? '.mov' : '.mp4';
       const loadedFile = new File([blob], `${vidItem.name}${ext}`, { type: mime });
       setFile(loadedFile);
@@ -521,8 +526,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
   // Select voiceover from library
   const handleSelectVoiceoverFromLibrary = async (base64Data: string, trackName: string) => {
     try {
-      const resp = await fetch(base64Data);
-      const blob = await resp.blob();
+      const { buffer, mimeType } = await readSourceUrlToArrayBuffer(base64Data);
+      const blob = new Blob([buffer], { type: mimeType || 'audio/wav' });
       if (voiceoverAudioUrl) URL.revokeObjectURL(voiceoverAudioUrl);
       const newUrl = URL.createObjectURL(blob);
 
@@ -1340,8 +1345,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
         setMusicAudioUrl(activeBackingTrack.url);
         setCustomMusicName(activeBackingTrack.title || 'Fond actif du Studio');
         try {
-          const resp = await fetch(activeBackingTrack.url);
-          const b = await resp.blob();
+          const { buffer, mimeType } = await readSourceUrlToArrayBuffer(activeBackingTrack.url);
+          const b = new Blob([buffer], { type: mimeType || 'audio/wav' });
           setMusicAudioBlob(b);
           addToast(`Fond sonore "${activeBackingTrack.title}" associé à la vidéo !`, 'success');
         } catch (e) {
@@ -1359,8 +1364,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
       const item = projectAudios.find((a) => String(a.id) === audioIdStr);
       if (item) {
         try {
-          const resp = await fetch(item.data);
-          const b = await resp.blob();
+          const { buffer, mimeType } = await readSourceUrlToArrayBuffer(item.data);
+          const b = new Blob([buffer], { type: mimeType || 'audio/wav' });
           setMusicAudioBlob(b);
           setMusicAudioUrl(URL.createObjectURL(b));
           setCustomMusicName(item.name);
@@ -1463,13 +1468,14 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
       setExportedVideoUrl(outputUrl);
       setExportedVideoBlob(blob);
 
-      const a = document.createElement('a');
-      a.href = outputUrl;
       const baseName = file.name.replace(/\.[^/.]+$/, '');
-      a.download = `${baseName}_voxart_subtitled.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      const downloadName = `${baseName}_voxart_subtitled.mp4`;
+      const serverDownloadUrl = response.headers.get('X-Download-Url');
+      if (serverDownloadUrl) {
+        triggerHttpUrlDownload(serverDownloadUrl, downloadName);
+      } else {
+        await triggerSafeDownload(blob, downloadName);
+      }
 
       addToast('Vidéo MP4 (H.264/AAC) compatible InShot, CapCut et mobile téléchargée !', 'success');
     } catch (err: any) {
@@ -1484,13 +1490,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
   const exportCurrentAsSRT = () => {
     if (segments.length === 0) return;
     const srt = getCombinedSRTString();
-    const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(file?.name || 'sous-titres').replace(/\.[^/.]+$/, '')}.srt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const blob = new Blob([srt], { type: 'application/x-subrip;charset=utf-8' });
+    void triggerSafeDownload(blob, `${(file?.name || 'sous-titres').replace(/\.[^/.]+$/, '')}.srt`);
     addToast('Fichier .SRT téléchargé', 'success');
   };
 
@@ -1502,12 +1503,7 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
     });
 
     const blob = new Blob([vtt], { type: 'text/vtt;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(file?.name || 'sous-titres').replace(/\.[^/.]+$/, '')}.vtt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    void triggerSafeDownload(blob, `${(file?.name || 'sous-titres').replace(/\.[^/.]+$/, '')}.vtt`);
     addToast('Fichier .VTT WebVTT téléchargé', 'success');
   };
 
@@ -1529,12 +1525,7 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
     });
 
     const content = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'voxart_transcriptions_subtitles.zip';
-    a.click();
-    URL.revokeObjectURL(url);
+    await triggerSafeDownload(content, 'voxart_transcriptions_subtitles.zip');
     addToast('Archive ZIP téléchargée', 'success');
   };
 
@@ -3026,13 +3017,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
                     type="button"
                     onClick={() => {
                       if (item.srtContent) {
-                        const blob = new Blob([item.srtContent], { type: 'text/plain;charset=utf-8' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `${item.name.replace(/\.[^/.]+$/, '')}.srt`;
-                        a.click();
-                        URL.revokeObjectURL(url);
+                        const blob = new Blob([item.srtContent], { type: 'application/x-subrip;charset=utf-8' });
+                        void triggerSafeDownload(blob, `${item.name.replace(/\.[^/.]+$/, '')}.srt`);
                         addToast('.SRT téléchargé', 'success');
                       }
                     }}

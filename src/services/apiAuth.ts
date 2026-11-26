@@ -302,7 +302,30 @@ export async function authFetch(
   };
 
   const isApiCall = url.startsWith('/api/') || url.includes('/api/');
-  const response = await fetch(input, mergedInit);
+  const runFetchWithRetry = async (): Promise<Response> => {
+    try {
+      return await fetch(input, mergedInit);
+    } catch (networkErr: any) {
+      if (mergedInit.signal?.aborted) {
+        throw networkErr;
+      }
+      // Retry once after brief backoff for transient mobile 4G / gateway resets
+      await new Promise((r) => setTimeout(r, 1200));
+      try {
+        return await fetch(input, mergedInit);
+      } catch (retryErr: any) {
+        const rawMsg = retryErr?.message || networkErr?.message || '';
+        if (/failed to fetch|load failed|networkerror|network request failed/i.test(rawMsg)) {
+          throw new Error(
+            'Connexion réseau instable ou interrompue avec le serveur. Vérifiez votre connexion Internet (4G/Wi-Fi) et réessayez.'
+          );
+        }
+        throw retryErr;
+      }
+    }
+  };
+
+  const response = await runFetchWithRetry();
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   const isTransientGatewayHtml =
     isApiCall &&
@@ -313,7 +336,7 @@ export async function authFetch(
 
   if (isTransientGatewayHtml) {
     await new Promise((r) => setTimeout(r, 1100));
-    return fetch(input, mergedInit);
+    return runFetchWithRetry();
   }
 
   return response;

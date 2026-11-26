@@ -1280,9 +1280,13 @@ RÈGLES SRT STRICTES :
       });
 
       const videoBuffer = fs.readFileSync(tempOutputPath);
+      const safeOutName = String(req.body?.outputFilename || 'voxart-video-edited.mp4').replace(/[\\/:*?"<>|]+/g, '_');
+      const dlUrl = registerPendingDownload(videoBuffer, 'video/mp4', safeOutName.endsWith('.mp4') ? safeOutName : `${safeOutName}.mp4`);
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Content-Length', String(videoBuffer.length));
-      res.setHeader('Content-Disposition', 'attachment; filename="voxart-video-edited.mp4"');
+      res.setHeader('X-Download-Url', dlUrl);
+      res.setHeader('Access-Control-Expose-Headers', 'X-Download-Url');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeOutName.endsWith('.mp4') ? safeOutName : `${safeOutName}.mp4`}"`);
       res.send(videoBuffer);
     } catch (err: any) {
       console.error("Video export server error:", err);
@@ -1483,9 +1487,21 @@ RÈGLES SRT STRICTES :
       });
 
       const mp4Buffer = fs.readFileSync(tempOutputPath);
+      const safeOutName = String(req.body?.outputFilename || 'voxart-slam-video.mp4').replace(/[\\/:*?"<>|]+/g, '_');
+      const finalOutName = safeOutName.endsWith('.mp4') ? safeOutName : `${safeOutName}.mp4`;
+      const dlUrl = registerPendingDownload(mp4Buffer, 'video/mp4', finalOutName);
+      if (String(req.body?.responseMode || '').toLowerCase() === 'json') {
+        return res.json({
+          url: dlUrl,
+          filename: finalOutName,
+          sizeBytes: mp4Buffer.length,
+        });
+      }
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Content-Length', String(mp4Buffer.length));
-      res.setHeader('Content-Disposition', 'attachment; filename="voxart-slam-video.mp4"');
+      res.setHeader('X-Download-Url', dlUrl);
+      res.setHeader('Access-Control-Expose-Headers', 'X-Download-Url');
+      res.setHeader('Content-Disposition', `attachment; filename="${finalOutName}"`);
       res.send(mp4Buffer);
     } catch (err: any) {
       console.error('Slam video compile error:', err);
@@ -1496,6 +1512,147 @@ RÈGLES SRT STRICTES :
       if (fs.existsSync(tempAssPath)) try { fs.unlinkSync(tempAssPath); } catch {}
       if (fs.existsSync(tempOutputPath)) try { fs.unlinkSync(tempOutputPath); } catch {}
     }
+  });
+
+  // Expiring HTTP download relay so Android / mobile iframes save exact .wav/.mp3/.mp4/.srt/.zip filenames instead of <uuid>.bin
+  const pendingDownloads = new Map<string, { buffer: Buffer; mime: string; filename: string; expiresAt: number }>();
+  const DOWNLOAD_TTL_MS = 10 * 60_000;
+
+  function prunePendingDownloads() {
+    const now = Date.now();
+    for (const [k, v] of pendingDownloads.entries()) {
+      if (v.expiresAt <= now) pendingDownloads.delete(k);
+    }
+    let totalBytes = 0;
+    for (const v of pendingDownloads.values()) totalBytes += v.buffer.length;
+    if (totalBytes > 200 * 1024 * 1024) {
+      for (const k of pendingDownloads.keys()) {
+        const removed = pendingDownloads.get(k);
+        pendingDownloads.delete(k);
+        if (removed) totalBytes -= removed.buffer.length;
+        if (totalBytes <= 150 * 1024 * 1024) break;
+      }
+    }
+  }
+
+  function registerPendingDownload(buffer: Buffer, mime: string, rawFilename: string): string {
+    prunePendingDownloads();
+    const cleanedName =
+      (rawFilename || 'VoxArt_Export.wav')
+        .replace(/[\\/:*?"<>|\r\n]+/g, '_')
+        .trim() || 'VoxArt_Export.wav';
+    const dlId = `dl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    pendingDownloads.set(dlId, {
+      buffer,
+      mime: mime || 'application/octet-stream',
+      filename: cleanedName,
+      expiresAt: Date.now() + DOWNLOAD_TTL_MS,
+    });
+    return `/api/download/${dlId}/${encodeURIComponent(cleanedName)}`;
+  }
+
+  app.post("/api/prepare-download", videoExportUpload.single('file'), async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file || !file.buffer || file.buffer.length === 0) {
+        return res.status(400).json({ error: "Fichier manquant pour le téléchargement." });
+      }
+      const rawFilename = String(req.body?.filename || file.originalname || 'VoxArt_File.wav');
+      let outBuffer = file.buffer;
+      let outMime = String(req.body?.mimeType || file.mimetype || '').trim();
+      const wantsMp3 = req.body?.convertToMp3 === 'true' || rawFilename.toLowerCase().endsWith('.mp3');
+
+      const hasRiff =
+        outBuffer.length >= 12 &&
+        outBuffer[0] === 0x52 &&
+        outBuffer[1] === 0x49 &&
+        outBuffer[2] === 0x46 &&
+        outBuffer[3] === 0x46;
+
+      if (wantsMp3 && hasRiff) {
+        const fs = (await import('fs')).default;
+        const path = (await import('path')).default;
+        const ffmpeg = (await import('fluent-ffmpeg')).default;
+        const os = (await import('os')).default;
+        const tid = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const inPath = path.join(os.tmpdir(), `dl-in-${tid}.wav`);
+        const outPath = path.join(os.tmpdir(), `dl-out-${tid}.mp3`);
+        try {
+          fs.writeFileSync(inPath, outBuffer);
+          await new Promise<void>((resolve, reject) => {
+            ffmpeg(inPath)
+              .audioCodec('libmp3lame')
+              .audioBitrate('192k')
+              .audioFrequency(44100)
+              .audioChannels(2)
+              .toFormat('mp3')
+              .on('end', () => resolve())
+              .on('error', (err) => reject(err))
+              .save(outPath);
+          });
+          outBuffer = fs.readFileSync(outPath);
+          outMime = 'audio/mpeg';
+        } finally {
+          if (fs.existsSync(inPath)) try { fs.unlinkSync(inPath); } catch {}
+          if (fs.existsSync(outPath)) try { fs.unlinkSync(outPath); } catch {}
+        }
+      } else if (!outMime || outMime === 'application/octet-stream') {
+        const lower = rawFilename.toLowerCase();
+        if (lower.endsWith('.wav')) outMime = 'audio/wav';
+        else if (lower.endsWith('.mp3')) outMime = 'audio/mpeg';
+        else if (lower.endsWith('.mp4')) outMime = 'video/mp4';
+        else if (lower.endsWith('.srt')) outMime = 'application/x-subrip; charset=utf-8';
+        else if (lower.endsWith('.vtt')) outMime = 'text/vtt; charset=utf-8';
+        else if (lower.endsWith('.txt')) outMime = 'text/plain; charset=utf-8';
+        else if (lower.endsWith('.zip')) outMime = 'application/zip';
+        else if (lower.endsWith('.json')) outMime = 'application/json; charset=utf-8';
+        else if (lower.endsWith('.png')) outMime = 'image/png';
+        else outMime = 'application/octet-stream';
+      }
+
+      const url = registerPendingDownload(outBuffer, outMime, rawFilename);
+      return res.json({ url, filename: rawFilename });
+    } catch (err: any) {
+      console.error('Prepare download error:', err);
+      return res.status(500).json({ error: err?.message || "Erreur lors de la préparation du téléchargement." });
+    }
+  });
+
+  app.get(["/api/download/:id/:filename", "/api/download/:id"], (req, res) => {
+    prunePendingDownloads();
+    const entry = pendingDownloads.get(req.params.id);
+    if (!entry) {
+      return res.status(404).send("Lien de téléchargement expiré. Veuillez relancer l'export.");
+    }
+    const total = entry.buffer.length;
+    const asciiSafe = entry.filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '');
+    res.setHeader('Content-Type', entry.mime);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiSafe}"; filename*=UTF-8''${encodeURIComponent(entry.filename)}`
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    const range = req.headers.range;
+    if (range) {
+      const match = /bytes=(\d*)-(\d*)/.exec(range);
+      if (match) {
+        const start = match[1] ? parseInt(match[1], 10) : 0;
+        const end = match[2] ? Math.min(total - 1, parseInt(match[2], 10)) : total - 1;
+        if (start >= 0 && start <= end && start < total) {
+          const chunk = entry.buffer.subarray(start, end + 1);
+          res.status(206);
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+          res.setHeader('Content-Length', String(chunk.length));
+          return res.send(chunk);
+        }
+      }
+    }
+
+    res.setHeader('Content-Length', String(total));
+    return res.send(entry.buffer);
   });
 
   // Fallback handler for Web Share Target POST /share-target when Service Worker is not yet controlling

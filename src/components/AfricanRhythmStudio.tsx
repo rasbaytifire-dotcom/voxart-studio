@@ -19,6 +19,7 @@ import {
   playAfricanInstrument, renderCompositionToWav,
   createSafePanner, SafePanNode 
 } from '../utils/africanAudioEngine';
+import { triggerSafeDownload } from '../utils/audioExport';
 
 interface AfricanRhythmStudioProps {
   onBackToStudio?: () => void;
@@ -619,14 +620,8 @@ export const AfricanRhythmStudio: React.FC<AfricanRhythmStudioProps> = ({
       setRenderedAudioBlob(blob);
       setRenderedAudioUrl(url);
 
-      // Trigger automatic direct browser download
       const filename = `${exportFileName || 'Rythme_Africain'}.wav`;
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      await triggerSafeDownload(blob, filename);
 
       setSaveSuccessMsg(`Fichier ${filename} généré en qualité Master (44.1kHz WAV) et téléchargé !`);
     } catch (err) {

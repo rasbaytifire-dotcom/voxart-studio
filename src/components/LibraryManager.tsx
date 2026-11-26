@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { copyTextToClipboard } from '../utils/clipboard';
-import { exportAudioDataAsWav } from '../utils/audioExport';
+import { exportAudioDataAsWav, triggerSafeDownload } from '../utils/audioExport';
 
 export interface SavedAudioItem {
   id: number;
@@ -549,12 +549,7 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
 
       showToast("Génération de l'archive ZIP du dossier...", "info");
       const content = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(content);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${norm.replace(/[^a-z0-9_-]/gi, '_')}_archive_complete.zip`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      await triggerSafeDownload(content, `${norm.replace(/[^a-z0-9_-]/gi, '_')}_archive_complete.zip`);
       showToast("Archive ZIP téléchargée !", "success");
     } catch (e) {
       console.error(e);
@@ -1474,11 +1469,7 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
                         <button
                           onClick={() => {
                             const blob = new Blob([item.content], { type: 'text/plain;charset=utf-8' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `${item.name}.txt`;
-                            a.click();
+                            void triggerSafeDownload(blob, `${item.name}.txt`);
                           }}
                           className="px-1.5 py-0.5 bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] rounded text-[10px]"
                           title="Télécharger TXT"
@@ -1489,12 +1480,8 @@ export const LibraryManager: React.FC<LibraryManagerProps> = ({
                         <button
                           onClick={() => {
                             const srt = generateSRT(item.content);
-                            const blob = new Blob([srt], { type: 'text/srt;charset=utf-8' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `${item.name}.srt`;
-                            a.click();
+                            const blob = new Blob([srt], { type: 'application/x-subrip;charset=utf-8' });
+                            void triggerSafeDownload(blob, `${item.name}.srt`);
                           }}
                           className="px-1.5 py-0.5 bg-[#313244] hover:bg-[#45475a] text-[#fab387] rounded text-[10px]"
                           title="Télécharger Sous-titres SRT"

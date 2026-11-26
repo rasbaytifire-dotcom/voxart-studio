@@ -2,7 +2,7 @@
  * VoxArt Studio - Service Worker for PWA Offline, Live Updates & Web Share Target
  */
 
-const CACHE_NAME = 'voxart-cache-v4-ridialart';
+const CACHE_NAME = 'voxart-cache-v6-ridialart';
 const SHARE_DB_NAME = 'voxart-share-db';
 const SHARE_DB_VERSION = 1;
 const SHARE_STORE_NAME = 'incoming_shares';
@@ -81,6 +81,14 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
+  // Never intercept blob:, data:, chrome-extension:, or external cross-origin requests
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.origin !== self.location.origin
+  ) {
+    return;
+  }
+
   // Intercept Android / Desktop Web Share Target POST requests
   if (event.request.method === 'POST' && url.pathname === '/share-target') {
     event.respondWith(
@@ -132,8 +140,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Never cache POST, PUT, DELETE, WebSocket, or API routes
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/')) {
+  // Never cache POST, PUT, DELETE, WebSocket, Range, or API routes
+  if (
+    event.request.method !== 'GET' ||
+    url.pathname.startsWith('/api/') ||
+    event.request.headers.has('range')
+  ) {
     return;
   }
 

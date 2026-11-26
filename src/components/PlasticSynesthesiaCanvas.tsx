@@ -5,6 +5,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Download, Sparkles, Eye, Maximize2, Minimize2 } from 'lucide-react';
+import { triggerSafeDownload } from '../utils/audioExport';
 
 interface PlasticSynesthesiaCanvasProps {
   audioElement: HTMLAudioElement | null;
@@ -269,12 +270,13 @@ export const PlasticSynesthesiaCanvas: React.FC<PlasticSynesthesiaCanvasProps> =
     const canvas = canvasRef.current;
     if (!canvas) return;
     try {
-      const dataUrl = canvas.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
       const cleanTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_');
-      a.download = `Toile_Synesthesique_RidiaLArt_${cleanTitle}_${Date.now()}.png`;
-      a.click();
+      const filename = `Toile_Synesthesique_RidiaLArt_${cleanTitle}_${Date.now()}.png`;
+      canvas.toBlob((blob) => {
+        if (blob) {
+          void triggerSafeDownload(blob, filename);
+        }
+      }, 'image/png');
     } catch (e) {
       console.warn('Canvas export error:', e);
     }
