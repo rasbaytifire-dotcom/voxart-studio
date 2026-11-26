@@ -137,6 +137,10 @@ function cleanTextForSpeech(text: string): string {
     .replace(/`([^`]+)`/g, '$1')
     .replace(/```[\s\S]*?```/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\[(?:respiration|souffle)\]/gi, '... ')
+    .replace(/\[(?:pause|silence)(?:\s*\d+s?)?\]/gi, '... — ... ')
+    .replace(/\[\/?(?:emphase|crescendo|murmure|ralentir|accelerando|fort|doux)\]/gi, ' ')
+    .replace(/\[[^\]]+\]/g, ' ')
     .replace(/https?:\/\/\S+/g, '')
     .replace(/^>\s+/gm, '')
     .replace(/^[-*_]{3,}\s*$/gm, '')
@@ -469,20 +473,66 @@ Retourne impérativement un objet JSON strict avec :
     }
   });
 
-  // AI Agent Chat Endpoint powered by Gemini Flash with multi-model fallback chain & media support
+  // AI Agent Chat Endpoint powered by Gemini with multi-model fallback chain, literary expert mode & media support
   app.post("/api/chat", async (req, res) => {
     try {
-      const { messages, currentText } = req.body;
+      const { messages, currentText, mode, literaryContext } = req.body;
       const effectiveKey = extractEffectiveApiKey(req);
 
       if (!effectiveKey) {
         return res.status(200).json({ 
-          reply: "Bonjour ! Pour activer toutes les capacités d'analyse et de génération de scénarios RidiaLArt avec Gemini, veuillez renseigner votre clé API Gemini (gratuite sur aistudio.google.com) dans les Paramètres ⚙️. En attendant, toutes les fonctions du Studio Vocal, des rythmes traditionnels et de la Bibliothèque fonctionnent librement !"
+          reply: mode === 'literary_expert'
+            ? "Pour activer l'Assistant Expert en Littérature & Création Poétique avec Gemini, veuillez configurer votre clé API Gemini dans les Paramètres ⚙️ (ou dans Settings > Secrets). Vous pouvez néanmoins utiliser librement l'éditeur de slam, le compteur de temps de parole et les marqueurs scéniques."
+            : "Bonjour ! Pour activer toutes les capacités d'analyse et de génération de scénarios RidiaLArt avec Gemini, veuillez renseigner votre clé API Gemini (gratuite sur aistudio.google.com) dans les Paramètres ⚙️. En attendant, toutes les fonctions du Studio Vocal, des rythmes traditionnels et de la Bibliothèque fonctionnent librement !"
         });
       }
       const effectiveAi = getEffectiveAi(effectiveKey);
 
-      const systemInstruction = `${RIDIALART_DOCTRINE_PROMPT}
+      const isLiteraryExpert = mode === 'literary_expert';
+      const reqCadence = Number(literaryContext?.cadenceWpm);
+      const validCadence = Number.isFinite(reqCadence) && reqCadence >= 60 && reqCadence <= 240 ? Math.round(reqCadence) : 0;
+      const reqTargetDur = Number(literaryContext?.targetDurationSec);
+      const validTargetDur = Number.isFinite(reqTargetDur) && reqTargetDur >= 5 && reqTargetDur <= 600 ? Math.round(reqTargetDur) : 0;
+      const targetSpokenWords =
+        validTargetDur > 0
+          ? Math.max(10, Math.round((validTargetDur / 60) * (validCadence || 130) * 0.86))
+          : 0;
+
+      const ctxDetails = literaryContext && typeof literaryContext === 'object'
+        ? [
+            literaryContext.movement ? `Courant artistique/littéraire visé : ${literaryContext.movement}` : '',
+            literaryContext.form ? `Forme poétique / style : ${literaryContext.form}` : '',
+            literaryContext.language ? `Langue / registre : ${literaryContext.language}` : '',
+            validCadence > 0 ? `Cadence de déclamation ciblée : ~${validCadence} mots/minute` : '',
+            validTargetDur > 0
+              ? `Durée audio cible stricte : ~${validTargetDur} secondes. Calibre impérativement le poème autour de ${Math.max(8, Math.round(targetSpokenWords * 0.9))} à ${Math.round(targetSpokenWords * 1.1)} mots parlés au total (hors balises entre crochets) avec des vers courts et percutants (6 à 11 mots par ligne pour un affichage lisible en sous-titres smartphone 9:16).`
+              : '',
+            typeof literaryContext.includeMarkers === 'boolean'
+              ? `Inclure les marqueurs scéniques VoxArt ([respiration], [pause], [silence 2s], [emphase]...[/emphase], [crescendo]...[/crescendo], [murmure]...[/murmure]) : ${literaryContext.includeMarkers ? 'OUI' : 'NON'}`
+              : '',
+          ].filter(Boolean).join('\n')
+        : '';
+
+      const LITERARY_POETRY_EXPERT_PROMPT = `Tu es le Maître Littéraire & Poète Expert de VoxArt Studio.
+Tu possèdes une érudition encyclopédique et une pratique vivante de :
+1. **L'Histoire de la Littérature et des Courants Artistiques** : Antiquité gréco-romaine et égyptienne, Poésie médiévale (troubadours, chansons de geste), Renaissance & Pléiade (Ronsard, Du Bellay), Baroque & Classicisme (Racine, La Fontaine), Lumières, Romantisme (Hugo, Lamartine, Musset), Parnasse, Symbolisme (Baudelaire, Verlaine, Rimbaud, Mallarmé), Surréalisme & Dada (Breton, Éluard, Desnos), Harlem Renaissance (Langston Hughes), Négritude & Oralité Africaine (Léopold Sédar Senghor, Aimé Césaire, Léon-Gontran Damas, Birago Diop, tradition des Griots et dyéli d'Afrique de l'Ouest), Beat Generation (Ginsberg, Kerouac), Spoken Word & Slam contemporain (Marc Kelly Smith, Grand Corps Malade, Abd al Malik, Souleymane Diamanka, Gaël Faye), ainsi que l'Afrofuturisme poétique et la pensée RidiaLArt.
+2. **La Prosodie, la Métrique et l'Art de l'Écriture** : alexandrin (césure à l'hémistiche 6/6), décasyllabe, octosyllabe, sonnet, ballade, pantoum, haïku, ode, élégie, vers libre, prose poétique, rimes (plates, croisées, embrassées, riches/suffisantes/pauvres), figures de style (anaphore, métaphore filée, allitération, assonance, chiasme, oxymore, hypotypose, prétérition), rythme respiratoire et musicalité orale.
+3. **L'Interprétation Scénique, Cadence & Durée** : Tu sais sculpter ou adapter des textes destinés à être déclamés à voix haute avec un débit précis (de 105 à 180 mots/min) et calibrés exactement sur une durée cible (ex. 15s, 30s, 60s). Lorsque l'utilisateur souhaite des repères d'interprétation ou écrit pour le studio Slam/Vocal, tu intègres avec finesse les marqueurs scéniques VoxArt : \`[respiration]\`, \`[pause]\`, \`[silence 2s]\`, \`[emphase]...[/emphase]\`, \`[crescendo]...[/crescendo]\`, \`[murmure]...[/murmure]\`, \`[ralentir]...[/ralentir]\`, et \`—\` (césure).
+
+Règles de réponse :
+- Réponds toujours en français (sauf si l'utilisateur demande une autre langue comme l'anglais ou le wolof, ou un poème bilingue).
+- Sois précis, cultivé, inspirant et pédagogique quand on te demande l'histoire d'un courant, une analyse stylistique, des rimes ou des conseils d'écriture.
+- Dès que tu crées, réécris ou adaptes un poème / texte de slam prêt à être récité, place IMPÉRATIVEMENT le texte final du poème seul dans un bloc de code balisé \`\`\`poeme\n...\n\`\`\` (sans commentaire à l'intérieur du bloc), afin que l'utilisateur puisse l'envoyer en un clic dans son éditeur vocal ou slam.
+${ctxDetails ? `\nParamètres souhaités par l'auteur :\n${ctxDetails}` : ''}`;
+
+      const systemInstruction = isLiteraryExpert
+        ? `${LITERARY_POETRY_EXPERT_PROMPT}
+
+Texte actuellement dans l'éditeur de l'auteur :
+---
+${currentText || "(Éditeur vide pour l'instant)"}
+---`
+        : `${RIDIALART_DOCTRINE_PROMPT}
 
 Contexte actuel de l'éditeur :
 ---
@@ -506,7 +556,7 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
         };
       });
 
-      const lastParts: any[] = [{ text: lastMessageObj?.content || "Analyse ce média et propose un scénario, des prompts d'images fixes et des prompts Google Flow 9:16." }];
+      const lastParts: any[] = [{ text: lastMessageObj?.content || "Propose-moi une création littéraire inspirante." }];
       if (lastMessageObj?.attachment) {
         lastParts.push({
           inlineData: {
@@ -519,10 +569,19 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
       // Check if client requested streaming
       const wantsStream = Boolean(req.body?.stream || req.query?.stream === 'true' || req.headers.accept?.includes('text/event-stream'));
 
-      // Automatic fallback chain between fast Gemini models to bypass single-model quota limits
-      const chatModelsChain = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.8-flash"];
+      // Use gemini-4-hydrogen for literary expert (with fallback models)
+      const chatModelsChain = isLiteraryExpert
+        ? ["gemini-4-hydrogen", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+        : ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-4-hydrogen"];
       let result;
       let lastChatError;
+
+      const buildChatConfig = (modelName: string) => {
+        if (modelName.startsWith("gemini-4-")) {
+          return { systemInstruction };
+        }
+        return { systemInstruction, temperature: isLiteraryExpert ? 0.65 : 0.3 };
+      };
 
       if (wantsStream) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -533,10 +592,7 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
           try {
             const chat = effectiveAi.chats.create({
               model: m,
-              config: {
-                systemInstruction: systemInstruction,
-                temperature: 0.3,
-              },
+              config: buildChatConfig(m),
               history: chatHistory,
             });
 
@@ -561,10 +617,7 @@ ${currentText || "(Aucun texte dans l'éditeur pour l'instant)"}
         try {
           const chat = effectiveAi.chats.create({
             model: m,
-            config: {
-              systemInstruction: systemInstruction,
-              temperature: 0.3,
-            },
+            config: buildChatConfig(m),
             history: chatHistory,
           });
 
@@ -1127,7 +1180,7 @@ RÈGLES SRT STRICTES :
         const complexFilters: string[] = [];
         let videoMap = '0:v';
 
-        // 1. Subtitles filter if requested
+        // 1. Ensure even dimensions for H.264 yuv420p hardware decoders + optional burned-in subtitles
         if (shouldBurnSubs) {
           const alignment = subtitlePosition === 'top' ? 6 : subtitlePosition === 'center' ? 5 : 2;
           const marginV = subtitlePosition === 'center' ? 10 : 32;
@@ -1146,10 +1199,13 @@ RÈGLES SRT STRICTES :
             shadow = 2;
           }
 
-          const forceStyle = `Fontname=Arial,Fontsize=${fontSize},PrimaryColour=${primaryColour},BackColour=${backColour},BorderStyle=4,Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV}`;
+          const forceStyle = `Fontname=Noto Sans,Fontsize=${fontSize},PrimaryColour=${primaryColour},BackColour=${backColour},BorderStyle=4,Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV}`;
           const escapedSrtPath = tempSrtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-          complexFilters.push(`[0:v]subtitles='${escapedSrtPath}':charenc=UTF-8:force_style='${forceStyle}'[vsub]`);
+          complexFilters.push(`[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,subtitles='${escapedSrtPath}':charenc=UTF-8:force_style='${forceStyle}'[vsub]`);
           videoMap = '[vsub]';
+        } else {
+          complexFilters.push(`[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[vnorm]`);
+          videoMap = '[vnorm]';
         }
 
         // 2. Audio mixing with flexible inputs (only reference [0:a] if video actually has audio!)
@@ -1196,13 +1252,17 @@ RÈGLES SRT STRICTES :
 
         const outOpts = [
           `-map ${videoMap}`,
-          ...(audioMap ? [`-map ${audioMap}`, '-c:a aac', '-b:a 192k'] : ['-an']),
+          ...(audioMap ? [`-map ${audioMap}`, '-c:a aac', '-b:a 192k', '-ar 44100', '-ac 2'] : ['-an']),
           '-c:v libx264',
+          '-profile:v main',
+          '-level 4.0',
           '-pix_fmt yuv420p',
+          '-vsync cfr',
           '-preset veryfast',
           '-crf 23',
           ...(videoDuration > 0 ? [`-t ${videoDuration.toFixed(3)}`] : []),
-          '-movflags +faststart'
+          '-movflags +faststart',
+          '-max_muxing_queue_size 1024'
         ];
 
         command
@@ -1221,6 +1281,7 @@ RÈGLES SRT STRICTES :
 
       const videoBuffer = fs.readFileSync(tempOutputPath);
       res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Length', String(videoBuffer.length));
       res.setHeader('Content-Disposition', 'attachment; filename="voxart-video-edited.mp4"');
       res.send(videoBuffer);
     } catch (err: any) {
@@ -1231,6 +1292,208 @@ RÈGLES SRT STRICTES :
       if (tempVoicePath && fs.existsSync(tempVoicePath)) try { fs.unlinkSync(tempVoicePath); } catch {}
       if (tempMusicPath && fs.existsSync(tempMusicPath)) try { fs.unlinkSync(tempMusicPath); } catch {}
       if (fs.existsSync(tempSrtPath)) try { fs.unlinkSync(tempSrtPath); } catch {}
+      if (fs.existsSync(tempOutputPath)) try { fs.unlinkSync(tempOutputPath); } catch {}
+    }
+  });
+
+  // Compile Slam & Poésie video directly to universal mobile-compatible H.264/AAC MP4
+  app.post("/api/compile-slam-video", videoExportUpload.fields([
+    { name: 'audio', maxCount: 1 },
+    { name: 'image', maxCount: 1 }
+  ]), async (req, res) => {
+    const fs = (await import('fs')).default;
+    const path = (await import('path')).default;
+    const ffmpeg = (await import('fluent-ffmpeg')).default;
+    const os = (await import('os')).default;
+
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    const audioFile = files?.audio?.[0];
+    const imageFile = files?.image?.[0];
+
+    if (!audioFile) {
+      return res.status(400).json({ error: "Fichier audio manquant pour la compilation vidéo." });
+    }
+
+    const rawW = parseInt(req.body?.width || '720', 10) || 720;
+    const rawH = parseInt(req.body?.height || '1280', 10) || 1280;
+    const width = Math.max(320, Math.min(1920, rawW % 2 === 0 ? rawW : rawW - 1));
+    const height = Math.max(320, Math.min(1920, rawH % 2 === 0 ? rawH : rawH - 1));
+    const fallbackDur = Math.max(2, Math.min(1800, parseFloat(req.body?.durationSec || '10') || 10));
+    const subtitleStyle = String(req.body?.subtitleStyle || 'gold_slam');
+    const subtitlePosition = String(req.body?.subtitlePosition || 'bottom');
+    const subtitleFontPx = Math.max(22, Math.min(64, parseInt(req.body?.subtitleFontPx || '36', 10) || 36));
+
+    let segments: Array<{ start: number; end: number; text: string }> = [];
+    try {
+      const parsed = JSON.parse(req.body?.segmentsJson || '[]');
+      if (Array.isArray(parsed)) {
+        segments = parsed.filter((s) => s && typeof s.text === 'string' && s.text.trim().length > 0);
+      }
+    } catch {
+      segments = [];
+    }
+
+    const inferAudioExt = (f: Express.Multer.File) => {
+      const ext = path.extname(f.originalname || '').toLowerCase();
+      if (ext && ext.length <= 6) return ext;
+      const mime = (f.mimetype || '').toLowerCase();
+      if (mime.includes('wav')) return '.wav';
+      if (mime.includes('mp3') || mime.includes('mpeg')) return '.mp3';
+      if (mime.includes('ogg')) return '.ogg';
+      if (mime.includes('webm')) return '.webm';
+      return '.wav';
+    };
+
+    const inferImgExt = (f: Express.Multer.File) => {
+      const mime = (f.mimetype || '').toLowerCase();
+      if (mime.includes('png')) return '.png';
+      if (mime.includes('webp')) return '.webp';
+      return '.jpg';
+    };
+
+    const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const tempAudioPath = path.join(os.tmpdir(), `slam-aud-${tempId}${inferAudioExt(audioFile)}`);
+    const tempImagePath = imageFile ? path.join(os.tmpdir(), `slam-img-${tempId}${inferImgExt(imageFile)}`) : null;
+    const tempAssPath = path.join(os.tmpdir(), `slam-sub-${tempId}.ass`);
+    const tempOutputPath = path.join(os.tmpdir(), `slam-out-${tempId}.mp4`);
+
+    const toAssTime = (sec: number) => {
+      const safe = Math.max(0, sec);
+      const h = Math.floor(safe / 3600);
+      const m = Math.floor((safe % 3600) / 60);
+      const s = Math.floor(safe % 60);
+      const cs = Math.min(99, Math.round((safe - Math.floor(safe)) * 100));
+      const pad2 = (n: number) => String(n).padStart(2, '0');
+      return `${h}:${pad2(m)}:${pad2(s)}.${pad2(cs)}`;
+    };
+
+    try {
+      fs.writeFileSync(tempAudioPath, audioFile.buffer);
+      if (imageFile && tempImagePath) {
+        fs.writeFileSync(tempImagePath, imageFile.buffer);
+      }
+
+      const probedAudio: any = await new Promise((resolve) => {
+        ffmpeg.ffprobe(tempAudioPath, (err, meta) => resolve(err ? null : meta));
+      });
+      const probedDur = Number(probedAudio?.format?.duration);
+      const totalDur = Number.isFinite(probedDur) && probedDur > 0.5 ? probedDur : fallbackDur;
+
+      // Build styled ASS subtitle script at exact video resolution
+      const isGold = subtitleStyle === 'gold_slam';
+      const isCyan = subtitleStyle === 'neon_cyan';
+      const primaryColour = isGold ? '&H008AE6FD' : isCyan ? '&H00FEF2E0' : '&H00FFFFFF';
+      const boxColour = isGold ? '&H38040C14' : isCyan ? '&H331C1006' : '&H47000000';
+      const alignment = subtitlePosition === 'top' ? 8 : subtitlePosition === 'center' ? 5 : 2;
+      const isVertical = height > width;
+      const marginV =
+        subtitlePosition === 'center'
+          ? 12
+          : subtitlePosition === 'top'
+          ? Math.round(height * (isVertical ? 0.16 : 0.14))
+          : Math.round(height * (isVertical ? 0.18 : 0.16));
+
+      const assLines: string[] = [
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        `PlayResX: ${width}`,
+        `PlayResY: ${height}`,
+        'WrapStyle: 2',
+        'ScaledBorderAndShadow: yes',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        `Style: SlamSub,Noto Sans,${subtitleFontPx},${primaryColour},&H000000FF,${boxColour},${boxColour},-1,0,0,0,100,100,0,0,3,14,0,${alignment},40,40,${marginV},1`,
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      ];
+
+      let dialogueCount = 0;
+      segments.forEach((seg, idx) => {
+        const sStart = Math.max(0, Math.min(totalDur - 0.1, Number(seg.start) || 0));
+        const nextSeg = segments[idx + 1];
+        const rawEnd = Number(seg.end) || sStart + 2;
+        const sEnd = Math.max(sStart + 0.15, Math.min(totalDur, nextSeg ? Math.min(rawEnd, nextSeg.start) : Math.max(rawEnd, totalDur)));
+        const cleanBody = String(seg.text || '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\{/g, '(')
+          .replace(/\}/g, ')')
+          .trim()
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join('\\N');
+        if (cleanBody) {
+          assLines.push(`Dialogue: 0,${toAssTime(sStart)},${toAssTime(sEnd)},SlamSub,,0,0,0,,{\\fad(90,60)}${cleanBody}`);
+          dialogueCount++;
+        }
+      });
+
+      const hasSubtitles = dialogueCount > 0;
+      if (hasSubtitles) {
+        fs.writeFileSync(tempAssPath, assLines.join('\n'), 'utf8');
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        let cmd = ffmpeg();
+        if (tempImagePath) {
+          cmd = cmd.input(tempImagePath).inputOptions(['-loop 1', '-framerate 30']);
+        } else {
+          cmd = cmd.input(`color=c=0x181825:s=${width}x${height}:r=30`).inputOptions(['-f lavfi']);
+        }
+        cmd = cmd.input(tempAudioPath);
+
+        const escapedAss = tempAssPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+        const vfChain = [
+          `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+          `crop=${width}:${height}`,
+          'setsar=1',
+          ...(hasSubtitles ? [`ass='${escapedAss}'`] : []),
+        ].join(',');
+
+        cmd
+          .complexFilter([`[0:v]${vfChain}[vout]`])
+          .outputOptions([
+            '-map [vout]',
+            '-map 1:a',
+            '-c:v libx264',
+            '-profile:v main',
+            '-level 4.0',
+            '-pix_fmt yuv420p',
+            '-r 30',
+            '-vsync cfr',
+            '-preset veryfast',
+            '-crf 22',
+            '-c:a aac',
+            '-b:a 192k',
+            '-ar 44100',
+            '-ac 2',
+            `-t ${totalDur.toFixed(3)}`,
+            '-movflags +faststart',
+            '-max_muxing_queue_size 1024',
+          ])
+          .toFormat('mp4')
+          .on('end', () => resolve())
+          .on('error', (err) => {
+            console.error('Slam FFmpeg compile failed:', err);
+            reject(err);
+          })
+          .save(tempOutputPath);
+      });
+
+      const mp4Buffer = fs.readFileSync(tempOutputPath);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Length', String(mp4Buffer.length));
+      res.setHeader('Content-Disposition', 'attachment; filename="voxart-slam-video.mp4"');
+      res.send(mp4Buffer);
+    } catch (err: any) {
+      console.error('Slam video compile error:', err);
+      res.status(500).json({ error: "Erreur lors de la compilation MP4 : " + (err?.message || err) });
+    } finally {
+      if (fs.existsSync(tempAudioPath)) try { fs.unlinkSync(tempAudioPath); } catch {}
+      if (tempImagePath && fs.existsSync(tempImagePath)) try { fs.unlinkSync(tempImagePath); } catch {}
+      if (fs.existsSync(tempAssPath)) try { fs.unlinkSync(tempAssPath); } catch {}
       if (fs.existsSync(tempOutputPath)) try { fs.unlinkSync(tempOutputPath); } catch {}
     }
   });

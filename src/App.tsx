@@ -8,7 +8,7 @@ import {
   Mic, Play, Pause, Download, Trash2, Sparkles, Volume2, 
   BookOpen, Users, Clock, Settings2, Sliders, Check, RefreshCw, 
   Music, Radio, Headphones, FileText, Bookmark, Info, ArrowRight, ArrowLeft, Settings, Scissors, AlertTriangle, Cpu, Timer, Package, Share2, Upload, Edit3, Folder, Copy,
-  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film, Search, Smartphone
+  Layers, ListOrdered, PlayCircle, PauseCircle, Square, Plus, FileUp, AlertCircle, CheckCircle2, X, Disc, Save, Bot, Waves, Film, Search, Smartphone, Feather
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -57,6 +57,9 @@ import { KnowledgeBaseManager } from './components/KnowledgeBaseManager';
 import { UnifiedStudioWorkspace } from './components/UnifiedStudioWorkspace';
 import { BackgroundMusicStudio } from './components/BackgroundMusicStudio';
 import { TranscriptionStudio, ProjectStudioLaunchContext } from './components/TranscriptionStudio';
+import { SlamPoetryStudio } from './components/SlamPoetryStudio';
+import { SlamPoetryEditor } from './components/SlamPoetryEditor';
+import { LiteraryExpertAssistant } from './components/LiteraryExpertAssistant';
 import { 
   TRADITIONAL_RHYTHM_PRESETS, 
   DEFAULT_SOUNDSCAPES, 
@@ -74,6 +77,8 @@ import {
   registerLaunchQueueConsumer,
 } from './utils/incomingShareStore';
 import { IncomingDestination, IncomingFileModal } from './components/IncomingFileModal';
+import { isVoiceGuideEnabled, setVoiceGuideEnabled } from './utils/voiceGuide';
+import { VoiceGuideWrapper } from './components/VoiceGuideWrapper';
 
 interface SynthesisPresetConfig {
   domain: string;
@@ -235,7 +240,13 @@ export default function App() {
     const saved = localStorage.getItem('voxart_interface_mode');
     return saved === 'classic' ? 'classic' : 'hub';
   });
-  const [currentView, setCurrentViewState] = useState<'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings' | 'about' | 'custom_voice'>('home');
+  const [voiceGuideEnabled, setVoiceGuideEnabledState] = useState<boolean>(() => isVoiceGuideEnabled());
+  const handleToggleVoiceGuide = (enabled: boolean) => {
+    setVoiceGuideEnabledState(enabled);
+    setVoiceGuideEnabled(enabled);
+    showToast(enabled ? "🔊 Guide Vocal activé : survolez les réglages et studios pour écouter les explications !" : "🔇 Guide Vocal désactivé.", "info");
+  };
+  const [currentView, setCurrentViewState] = useState<'home' | 'rhythm_studio' | 'library' | 'knowledge_base' | 'settings' | 'about' | 'custom_voice' | 'slam_poetry'>('home');
   const [aboutClassicRoute, setAboutClassicRoute] = useState<AboutSubRouteId>('about');
   const [studioComposition, setStudioComposition] = useState<RhythmComposition | undefined>(undefined);
   const [activeBackingTrack, setActiveBackingTrack] = useState<BackingTrackInfo | null>(null);
@@ -360,6 +371,10 @@ export default function App() {
     return localStorage.getItem('voxart_autosave_time') || null;
   });
   const [showMixer, setShowMixer] = useState<boolean>(false);
+  const [classicSlamMode, setClassicSlamMode] = useState<boolean>(false);
+  const [classicSlamCadenceWpm, setClassicSlamCadenceWpm] = useState<number>(130);
+  const [classicSlamTargetDurationSec, setClassicSlamTargetDurationSec] = useState<number>(30);
+  const [classicShowLiteraryExpert, setClassicShowLiteraryExpert] = useState<boolean>(false);
   const [saveTitle, setSaveTitle] = useState('Piste_01');
   const [library, setLibrary] = useState<Record<string, ProjectData>>({});
   const [selectedProject, setSelectedProject] = useState<string>('');
@@ -857,6 +872,9 @@ export default function App() {
 
   useEffect(() => {
     switch (hashRoute) {
+      case 'slam_poetry':
+        setCurrentViewState('slam_poetry');
+        break;
       case 'music_rhythm':
         setCurrentViewState('rhythm_studio');
         break;
@@ -941,12 +959,16 @@ export default function App() {
     type: 'success' | 'error' | 'info' | 'warning';
   }
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const hasWarnedLocalQuotaRef = useRef<boolean>(false);
   const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
     const id = Date.now() + Math.random();
-    setToasts(prev => [...prev, { id, message, type }]);
+    setToasts(prev => {
+      if (prev.some(t => t.message === message)) return prev;
+      return [...prev.slice(-1), { id, message, type }];
+    });
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
-    }, 4500);
+    }, 4000);
   };
 
   const appUpdate = useAppUpdate((msg, type) => showToast(msg, type || 'info'));
@@ -1513,7 +1535,10 @@ export default function App() {
       localStorage.setItem('voxart_library', JSON.stringify(lib));
     } catch (e: any) {
       console.warn("Storage quota exceeded:", e);
-      showToast("Stockage local saturé. Sauvegarde IndexedDB prioritaire active.", "info");
+      if (!hasWarnedLocalQuotaRef.current) {
+        hasWarnedLocalQuotaRef.current = true;
+        showToast("Stockage local saturé. Sauvegarde IndexedDB prioritaire active.", "info");
+      }
     }
 
     await saveProjectOffline({ id: 'main_library', library: lib }).catch(() => {});
@@ -2204,6 +2229,8 @@ export default function App() {
     }
 
     saveLibraryToStorage(updatedLib);
+    setSelectedProject(targetProj);
+    setNewProjectName('');
     showToast(`Enregistré avec succès dans le projet "${targetProj}" (Studio RidiaLArt-Vision) !`, "success");
     setShowSaveSection(false);
     setCurrentView('library');
@@ -3376,6 +3403,7 @@ ${item.text}`;
               fileInputRef={fileInputRef}
               onImportFile={handleImportFile}
               showToast={showToast}
+              apiKey={apiKey}
             />
           </ErrorBoundary>
         )}
@@ -3738,10 +3766,36 @@ ${item.text}`;
                 </div>
 
                 {/* Espace Épuré : Zone de texte & Auto-sauvegarde 30s */}
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <label className="block text-xs font-semibold text-[#a6adc8]">Texte à convertir :</label>
+                      <button
+                        type="button"
+                        onClick={() => setClassicSlamMode((prev) => !prev)}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+                          classicSlamMode
+                            ? 'bg-[#f59e0b]/20 text-[#fbbf24] border-[#f59e0b]/50'
+                            : 'bg-[#313244] hover:bg-[#45475a] text-[#f9e2af] border-[#f9e2af]/30'
+                        }`}
+                        title="Activer l'éditeur dédié Slam & Poésie avec temps de parole estimé et marqueurs de respiration/emphase"
+                      >
+                        <Feather className="w-2.5 h-2.5" />
+                        <span>{classicSlamMode ? 'Éditeur Slam actif' : 'Mode Slam & Poésie'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setClassicShowLiteraryExpert((prev) => !prev)}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+                          classicShowLiteraryExpert
+                            ? 'bg-[#89b4fa]/20 text-[#89b4fa] border-[#89b4fa]/50'
+                            : 'bg-[#313244] hover:bg-[#45475a] text-[#cba6f7] border-[#cba6f7]/30'
+                        }`}
+                        title="Ouvrir l'assistant littéraire expert en histoire, courants poétiques et métrique"
+                      >
+                        <BookOpen className="w-2.5 h-2.5" />
+                        <span>Assistant Poète Expert</span>
+                      </button>
                       {/* Outil de nettoyage immédiat des astérisques et markdown */}
                       <button
                         type="button"
@@ -3778,15 +3832,56 @@ ${item.text}`;
                           <Check className="w-2.5 h-2.5 text-[#a6e3a1]" /> Auto-sauvegardé ({lastAutoSaveTime})
                         </span>
                       )}
-                      <span className="text-[10px] text-[#6c7086] font-mono">{text.length} caractères</span>
+                      {!classicSlamMode && (
+                        <span className="text-[10px] text-[#6c7086] font-mono">{text.length} caractères</span>
+                      )}
                     </div>
                   </div>
-                  <textarea
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    placeholder="Saisissez ou collez votre texte ici..."
-                    className="w-full h-36 p-3 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm resize-y focus:outline-none focus:border-[#89b4fa] transition-colors"
-                  />
+
+                  {classicShowLiteraryExpert && (
+                    <LiteraryExpertAssistant
+                      currentText={text}
+                      apiKey={apiKey}
+                      language={language}
+                      cadenceWpm={classicSlamCadenceWpm}
+                      onChangeCadenceWpm={setClassicSlamCadenceWpm}
+                      targetDurationSec={classicSlamTargetDurationSec}
+                      onChangeTargetDurationSec={setClassicSlamTargetDurationSec}
+                      onApplyPoem={(poem) => {
+                        setText(poem);
+                        setClassicSlamMode(true);
+                      }}
+                      onAppendPoem={(poem) => {
+                        setText(text.trim() ? `${text.trim()}\n\n${poem}` : poem);
+                        setClassicSlamMode(true);
+                      }}
+                      onClose={() => setClassicShowLiteraryExpert(false)}
+                      addToast={showToast}
+                    />
+                  )}
+
+                  {classicSlamMode ? (
+                    <SlamPoetryEditor
+                      value={text}
+                      onChange={setText}
+                      cadenceWpm={classicSlamCadenceWpm}
+                      onChangeCadenceWpm={setClassicSlamCadenceWpm}
+                      targetDurationSec={classicSlamTargetDurationSec}
+                      onChangeTargetDurationSec={setClassicSlamTargetDurationSec}
+                      rows={6}
+                      accentColor="blue"
+                      label="Éditeur Slam & Poésie"
+                      onOpenLiteraryAssistant={() => setClassicShowLiteraryExpert((prev) => !prev)}
+                      onNotify={showToast}
+                    />
+                  ) : (
+                    <textarea
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      placeholder="Saisissez ou collez votre texte ici..."
+                      className="w-full h-36 p-3 rounded-xl bg-[#313244] border border-[#45475a] text-[#cdd6f4] text-sm resize-y focus:outline-none focus:border-[#89b4fa] transition-colors"
+                    />
+                  )}
                 </div>
 
                 {/* MODULE INTÉGRÉ DANS LA PAGE D'ACCUEIL : CHOIX, COMPOSITION ET MIXAGE DU FOND SONORE */}
@@ -4910,6 +5005,73 @@ ${item.text}`;
           </ErrorBoundary>
         )}
 
+        {/* SLAM & POETRY STUDIO VIEW */}
+        {(currentView === 'slam_poetry' || (interfaceMode === 'hub' && hashRoute === 'slam_poetry')) && (
+          <ErrorBoundary moduleName="Slam & Poésie" onResetToHome={() => navigateHash('home')}>
+            <SlamPoetryStudio
+              apiKey={apiKey}
+              customVoices={customVoices}
+              library={library}
+              addToast={showToast}
+              onCreateProject={(projName) => {
+                const trimmed = projName.trim();
+                if (!trimmed) return;
+                setLibrary((prev) => {
+                  if (prev[trimmed]) return prev;
+                  const updated = {
+                    ...prev,
+                    [trimmed]: { audios: [], texts: [], videos: [] },
+                  };
+                  try {
+                    localStorage.setItem('voxart_library', JSON.stringify(updated));
+                  } catch {
+                    if (!hasWarnedLocalQuotaRef.current) {
+                      hasWarnedLocalQuotaRef.current = true;
+                      showToast("Stockage local saturé. Sauvegarde IndexedDB prioritaire active.", "info");
+                    }
+                  }
+                  saveProjectOffline({ id: 'main_library', library: updated }).catch(() => {});
+                  return updated;
+                });
+              }}
+              onSaveAssetToProject={(proj, cat, name, data) => {
+                setLibrary((prev) => {
+                  const existing = prev[proj] || { audios: [], texts: [], videos: [] };
+                  const itemId = Date.now() + Math.floor(Math.random() * 1000);
+                  const nextProject = {
+                    ...existing,
+                    audios:
+                      cat === 'audios'
+                        ? [...(existing.audios || []), { id: itemId, name, data }]
+                        : existing.audios || [],
+                    texts:
+                      cat === 'texts'
+                        ? [...(existing.texts || []), { id: itemId, name, content: data }]
+                        : existing.texts || [],
+                    videos:
+                      cat === 'videos'
+                        ? [...(existing.videos || []), { id: itemId, name, data }]
+                        : existing.videos || [],
+                  };
+                  const updated = { ...prev, [proj]: nextProject };
+                  try {
+                    localStorage.setItem('voxart_library', JSON.stringify(updated));
+                  } catch {
+                    if (!hasWarnedLocalQuotaRef.current) {
+                      hasWarnedLocalQuotaRef.current = true;
+                      showToast("Stockage local saturé. Sauvegarde IndexedDB prioritaire active.", "info");
+                    }
+                  }
+                  saveProjectOffline({ id: 'main_library', library: updated }).catch(() => {});
+                  return updated;
+                });
+                showToast(`"${name}" enregistré dans "${proj}" !`, 'success');
+              }}
+              onBackToHome={() => navigateHash('home')}
+            />
+          </ErrorBoundary>
+        )}
+
         {/* LIBRARY VIEW */}
         {currentView === 'library' && interfaceMode === 'hub' && (
           <LibraryHubView
@@ -5755,6 +5917,36 @@ ${item.text}`;
               onNotify={(msg, type) => showToast(msg, type)}
             />
 
+            {/* Guide Vocal Pédagogique au Survol */}
+            <div className="p-4 bg-[#181825] rounded-xl border border-[#89b4fa]/35 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-[#89b4fa]/15 text-[#89b4fa]">
+                    <Volume2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-[#cdd6f4]">
+                      Guide Vocal Pédagogique (Survol des réglages)
+                    </h3>
+                    <p className="text-[11px] text-[#a6adc8] mt-0.5">
+                      Active une voix off pédagogique expliquant les réglages courants (ex: mode RidiaLArt, pitch, voix) au survol.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceGuide(!voiceGuideEnabled)}
+                  className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    voiceGuideEnabled
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'bg-[#313244] text-[#a6adc8] hover:text-[#cdd6f4]'
+                  }`}
+                >
+                  {voiceGuideEnabled ? '🔊 Actif (Activé)' : '🔇 Inactif (Désactivé)'}
+                </button>
+              </div>
+            </div>
+
             {/* Application Mobile PWA : Installer, Partager & Ouvrir avec (VoxArt) */}
             <div className="p-4 bg-[#181825] rounded-xl border border-[#89b4fa]/35 space-y-3">
               <div className="flex items-start justify-between gap-3">
@@ -5823,10 +6015,12 @@ ${item.text}`;
             {/* Thématique & Mode du Studio */}
             <div className="space-y-2 pt-2">
               <label className="block text-xs font-semibold text-[#a6adc8]">Thématique active & Mode du Studio :</label>
-              <ThemeModeSelector
-                currentMode={themeMode}
-                onSelectMode={handleSelectThemeMode}
-              />
+              <VoiceGuideWrapper tip="Vous êtes dans le mode RidiaLArt ou Standard. Choisissez votre thématique artistique pour adapter l'ambiance visuelle et sonore.">
+                <ThemeModeSelector
+                  currentMode={themeMode}
+                  onSelectMode={handleSelectThemeMode}
+                />
+              </VoiceGuideWrapper>
             </div>
 
             <div className="space-y-1.5 mt-3 p-3 bg-[#1e1e2e]/80 rounded-xl border border-[#45475a]/50">

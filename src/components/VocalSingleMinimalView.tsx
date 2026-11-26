@@ -15,6 +15,8 @@ import {
   ChevronUp,
   Eraser,
   Sparkles,
+  BookOpen,
+  Feather,
 } from 'lucide-react';
 import { cleanTextForSpeech } from '../utils/textCleaner';
 import { PlasticSynesthesiaCanvas } from './PlasticSynesthesiaCanvas';
@@ -25,6 +27,8 @@ import {
   isCustomVoiceId,
   toCustomVoiceOptionId,
 } from '../utils/customVoiceStorage';
+import { SlamPoetryEditor } from './SlamPoetryEditor';
+import { LiteraryExpertAssistant } from './LiteraryExpertAssistant';
 
 interface VoiceOption {
   id: string;
@@ -81,6 +85,7 @@ interface VocalSingleMinimalViewProps {
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onImportFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   showToast: (msg: string, type?: 'info' | 'success' | 'error') => void;
+  apiKey?: string;
 }
 
 export const VocalSingleMinimalView: React.FC<VocalSingleMinimalViewProps> = ({
@@ -133,8 +138,13 @@ export const VocalSingleMinimalView: React.FC<VocalSingleMinimalViewProps> = ({
   fileInputRef,
   onImportFile,
   showToast,
+  apiKey,
 }) => {
   const [openDrawer, setOpenDrawer] = useState<'none' | 'trim' | 'export'>('none');
+  const [isSlamMode, setIsSlamMode] = useState<boolean>(false);
+  const [slamCadenceWpm, setSlamCadenceWpm] = useState<number>(130);
+  const [slamTargetDurationSec, setSlamTargetDurationSec] = useState<number>(30);
+  const [showLiteraryExpert, setShowLiteraryExpert] = useState<boolean>(false);
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-4">
@@ -228,10 +238,39 @@ export const VocalSingleMinimalView: React.FC<VocalSingleMinimalViewProps> = ({
           );
         })()}
 
-        {/* Zone de texte épurée */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <label className="text-xs font-semibold text-[#cdd6f4]">Texte à convertir</label>
+        {/* Zone de texte épurée ou Mode Slam/Poésie */}
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <label className="text-xs font-semibold text-[#cdd6f4] mr-1">Texte à convertir</label>
+              <button
+                type="button"
+                onClick={() => setIsSlamMode((prev) => !prev)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors flex items-center gap-1 cursor-pointer ${
+                  isSlamMode
+                    ? 'bg-[#f59e0b]/20 text-[#fbbf24] border-[#f59e0b]/50'
+                    : 'bg-[#181825] text-[#a6adc8] border-[#313244] hover:text-[#cdd6f4]'
+                }`}
+                title="Activer l'éditeur Slam & Poésie avec temps de parole et marqueurs de respiration/emphase"
+              >
+                <Feather className="w-3 h-3" />
+                <span>{isSlamMode ? 'Éditeur Slam actif' : 'Mode Slam & Poésie'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowLiteraryExpert((prev) => !prev)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors flex items-center gap-1 cursor-pointer ${
+                  showLiteraryExpert
+                    ? 'bg-[#89b4fa]/20 text-[#89b4fa] border-[#89b4fa]/50'
+                    : 'bg-[#181825] text-[#cba6f7] border-[#313244] hover:border-[#cba6f7]/50'
+                }`}
+                title="Ouvrir l'assistant littéraire et poétique expert"
+              >
+                <BookOpen className="w-3 h-3" />
+                <span>Assistant Poète Expert</span>
+              </button>
+            </div>
+
             <div className="flex items-center gap-3 text-xs text-[#a6adc8]">
               <button
                 type="button"
@@ -254,18 +293,58 @@ export const VocalSingleMinimalView: React.FC<VocalSingleMinimalViewProps> = ({
                   <span>Nettoyer</span>
                 </button>
               )}
-              <span className="font-mono tabular-nums text-[11px] text-[#6c7086]">
-                {text.length} car.
-              </span>
+              {!isSlamMode && (
+                <span className="font-mono tabular-nums text-[11px] text-[#6c7086]">
+                  {text.length} car.
+                </span>
+              )}
             </div>
           </div>
 
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Saisissez ou collez votre texte ici..."
-            className="w-full h-40 sm:h-44 p-3.5 rounded-xl bg-[#181825] border border-[#313244] text-[#cdd6f4] text-sm resize-y focus:outline-none focus:border-[#89b4fa] transition-colors"
-          />
+          {showLiteraryExpert && (
+            <LiteraryExpertAssistant
+              currentText={text}
+              apiKey={apiKey}
+              language={language}
+              cadenceWpm={slamCadenceWpm}
+              onChangeCadenceWpm={setSlamCadenceWpm}
+              targetDurationSec={slamTargetDurationSec}
+              onChangeTargetDurationSec={setSlamTargetDurationSec}
+              onApplyPoem={(poem) => {
+                setText(poem);
+                setIsSlamMode(true);
+              }}
+              onAppendPoem={(poem) => {
+                setText(text.trim() ? `${text.trim()}\n\n${poem}` : poem);
+                setIsSlamMode(true);
+              }}
+              onClose={() => setShowLiteraryExpert(false)}
+              addToast={(msg, type) => showToast(msg, type === 'warning' ? 'info' : type)}
+            />
+          )}
+
+          {isSlamMode ? (
+            <SlamPoetryEditor
+              value={text}
+              onChange={setText}
+              cadenceWpm={slamCadenceWpm}
+              onChangeCadenceWpm={setSlamCadenceWpm}
+              targetDurationSec={slamTargetDurationSec}
+              onChangeTargetDurationSec={setSlamTargetDurationSec}
+              rows={7}
+              accentColor="blue"
+              label="Éditeur Slam & Cadence"
+              onOpenLiteraryAssistant={() => setShowLiteraryExpert((prev) => !prev)}
+              onNotify={(msg, type) => showToast(msg, type)}
+            />
+          ) : (
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Saisissez ou collez votre texte ici..."
+              className="w-full h-40 sm:h-44 p-3.5 rounded-xl bg-[#181825] border border-[#313244] text-[#cdd6f4] text-sm resize-y focus:outline-none focus:border-[#89b4fa] transition-colors"
+            />
+          )}
 
           <input
             ref={fileInputRef}

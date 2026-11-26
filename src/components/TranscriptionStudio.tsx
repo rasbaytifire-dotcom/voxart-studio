@@ -341,6 +341,20 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
     setRawText(content);
   }, [initialScriptPayload]);
 
+  // Auto-generate synchronized subtitles if rawText is loaded and segments are empty
+  useEffect(() => {
+    if (rawText && segments.length === 0 && !looksLikeSRT(rawText)) {
+      const cleanScript = cleanTextForSpeech(stripLibraryMetadataHeader(rawText));
+      if (cleanScript.trim()) {
+        const { segments: generated, metrics } = buildVoiceSynchronizedSRT(rawText, voiceoverDuration, voiceDelaySeconds);
+        if (generated.length > 0) {
+          setSegments(generated);
+          setLastVoiceSyncMetrics(metrics);
+        }
+      }
+    }
+  }, [rawText, voiceoverDuration]);
+
   // Cleanup mic resources on unmount
   useEffect(() => {
     return () => {
@@ -1442,7 +1456,8 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
         throw new Error(errJson.error || "Erreur lors de l'assemblage de la vidéo");
       }
 
-      const blob = await response.blob();
+      const rawBuffer = await response.arrayBuffer();
+      const blob = new Blob([rawBuffer], { type: 'video/mp4' });
       if (exportedVideoUrl) URL.revokeObjectURL(exportedVideoUrl);
       const outputUrl = URL.createObjectURL(blob);
       setExportedVideoUrl(outputUrl);
@@ -1452,9 +1467,11 @@ export const TranscriptionStudio: React.FC<TranscriptionStudioProps> = ({
       a.href = outputUrl;
       const baseName = file.name.replace(/\.[^/.]+$/, '');
       a.download = `${baseName}_voxart_subtitled.mp4`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
 
-      addToast('Vidéo finale assemblée et téléchargée avec succès !', 'success');
+      addToast('Vidéo MP4 (H.264/AAC) compatible InShot, CapCut et mobile téléchargée !', 'success');
     } catch (err: any) {
       console.error(err);
       addToast(err?.message || "Erreur lors de l'export de la vidéo", 'error');

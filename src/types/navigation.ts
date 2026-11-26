@@ -7,6 +7,7 @@ export type AppRouteId =
   | 'vocal_batch'
   | 'video_dubbing'
   | 'video_transcription'
+  | 'slam_poetry'
   | 'music_rhythm'
   | 'music_mixer'
   | 'ai_assistant'
@@ -22,6 +23,7 @@ export type AppRouteId =
 export type HubCategoryId =
   | 'vocal'
   | 'video'
+  | 'slam_poetry'
   | 'music'
   | 'ai'
   | 'library'
@@ -52,6 +54,7 @@ export const ROUTE_HASH_MAP: Record<AppRouteId, string> = {
   vocal_batch: '#/vocal/lots',
   video_dubbing: '#/video/doublage',
   video_transcription: '#/video/transcription',
+  slam_poetry: '#/slam-poesie',
   music_rhythm: '#/musique/rythmes',
   music_mixer: '#/musique/mixage',
   ai_assistant: '#/ia/assistant',
@@ -72,6 +75,7 @@ export const ROUTE_TITLES: Record<AppRouteId, string> = {
   vocal_batch: 'Production par Lots',
   video_dubbing: 'Doublage Vidéo',
   video_transcription: 'Transcription & Sous-titres',
+  slam_poetry: 'Slam & Poésie',
   music_rhythm: 'Atelier Rythmes',
   music_mixer: 'Fond Sonore & Mixage',
   ai_assistant: 'Assistant Créatif',
@@ -133,6 +137,14 @@ export const HUB_CATEGORIES: HubCategoryItem[] = [
         iconName: 'subtitles',
       },
     ],
+  },
+  {
+    id: 'slam_poetry',
+    title: 'Slam & Poésie',
+    subtitle: 'Voix · Musique · Image · Vidéo',
+    accent: '#f59e0b',
+    iconName: 'mic',
+    directRoute: 'slam_poetry',
   },
   {
     id: 'music',

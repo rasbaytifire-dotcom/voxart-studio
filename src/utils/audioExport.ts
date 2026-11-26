@@ -77,11 +77,12 @@ export function audioBufferToWavBlob(buffer: AudioBuffer): Blob {
 }
 
 function buildCleanWavFilename(rawName: string): string {
-  const stripped = (rawName || 'audio_voxart')
-    .trim()
-    .replace(/\.(wav|mp3|ogg|webm|m4a|aac)$/i, '');
+  const trimmed = (rawName || '').trim();
+  const isUuidOrBin = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.bin)?$/i.test(trimmed) || trimmed.endsWith('.bin');
+  const base = isUuidOrBin || !trimmed ? `VoxArt_Audio_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}` : trimmed;
+  const stripped = base.replace(/\.(wav|mp3|ogg|webm|m4a|aac|bin)$/i, '');
   const safe = stripped.replace(/[\\/:*?"<>|]+/g, '_').trim();
-  return `${safe || 'audio_voxart'}.wav`;
+  return `${safe || 'VoxArt_Audio'}.wav`;
 }
 
 function hasRiffWaveHeader(bytes: Uint8Array): boolean {
